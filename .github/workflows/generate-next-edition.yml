@@ -1,0 +1,21 @@
+name: Generate Next Edition
+on:
+  schedule:
+    # Runs at 23:58 UTC daily. Adjust if you want a different timezone.
+    - cron: "58 23 * * *"
+  workflow_dispatch:
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute today's edition date (UTC)
+        id: next_date
+        run: |
+          echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+      - name: Trigger edition generation
+        run: |
+          DATE="${{ steps.next_date.outputs.date }}"
+          curl --fail --show-error --retry 3 --retry-delay 15 \
+            -X POST "https://the-silicon-gazette.vercel.app/api/gazette/generate" \
+            -H "Content-Type: application/json" \
+            -d "{\"date\":\"$DATE\"}"

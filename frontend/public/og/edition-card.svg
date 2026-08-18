@@ -1,0 +1,10 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#f7f3e8"/>
+  <rect x="24" y="24" width="1152" height="582" stroke="#2c200f" stroke-width="4"/>
+  <rect x="40" y="40" width="1120" height="550" stroke="#9b8a6a" stroke-width="2"/>
+  <text x="600" y="180" text-anchor="middle" fill="#6b5c3e" font-family="Georgia, serif" font-size="28" letter-spacing="8">EST. 2026</text>
+  <text x="600" y="300" text-anchor="middle" fill="#1a1009" font-family="Georgia, serif" font-size="88" font-weight="700">THE SILICON GAZETTE</text>
+  <line x1="120" y1="350" x2="1080" y2="350" stroke="#2c200f" stroke-width="3"/>
+  <text x="600" y="430" text-anchor="middle" fill="#9b1a0a" font-family="Georgia, serif" font-size="34" letter-spacing="4">DAILY EDITION</text>
+  <text x="600" y="500" text-anchor="middle" fill="#6b5c3e" font-family="Georgia, serif" font-size="24" letter-spacing="2">All the code that's fit to print</text>
+</svg>

@@ -1,0 +1,1 @@
+﻿require('dotenv').config({path: '.env.local'}); import('./lib/db.ts').then(db => db.getEditionByDate('2026-08-18').then(r => console.log('FOUND:', r ? r.id : 'null')).catch(console.error)).catch(console.error);
