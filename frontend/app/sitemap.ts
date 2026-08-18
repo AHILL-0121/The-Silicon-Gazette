@@ -3,6 +3,8 @@ import type { MetadataRoute } from "next";
 import { listArchive } from "@/lib/edition-service";
 import { toEditionDate } from "@/lib/date";
 
+export const dynamic = "force-dynamic";
+
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
   const entries = await listArchive();
