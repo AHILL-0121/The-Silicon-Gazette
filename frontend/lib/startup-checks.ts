@@ -1,4 +1,5 @@
 import { checkDatabaseHealth } from "./db";
+import { GEMINI_MODEL } from "./gemini";
 
 type ApiHealth = {
   configured: boolean;
@@ -98,10 +99,12 @@ async function checkGeminiHealth(): Promise<ApiHealth> {
   }
 
   try {
+    // Check the same model the fallback actually calls, with the key in a header.
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash?key=${process.env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}`,
       {
         method: "GET",
+        headers: { "x-goog-api-key": process.env.GEMINI_API_KEY },
         signal: timeoutSignal(6000)
       }
     );
@@ -110,14 +113,14 @@ async function checkGeminiHealth(): Promise<ApiHealth> {
       return {
         configured: true,
         reachable: true,
-        detail: "Gemini API reachable (fallback ready)."
+        detail: `Gemini model ${GEMINI_MODEL} reachable (fallback ready).`
       };
     }
 
     return {
       configured: true,
       reachable: false,
-      detail: `Gemini API returned HTTP ${response.status}.`
+      detail: `Gemini model ${GEMINI_MODEL} returned HTTP ${response.status}.`
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);

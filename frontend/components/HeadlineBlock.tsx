@@ -1,51 +1,51 @@
-import Link from "next/link";
+import type { EditionView } from "@/lib/edition-view";
 
-import type { Headline } from "@/lib/types";
+type Lead = EditionView["lead"];
 
 interface HeadlineBlockProps {
-  headline: Headline;
+  lead: Lead;
 }
 
-export function HeadlineBlock({ headline }: HeadlineBlockProps) {
-  const paragraphs = headline.body.split(/\n\n+/).filter(Boolean);
-  const hasReference = Boolean(headline.url);
-
+export function HeadlineBlock({ lead }: HeadlineBlockProps) {
   return (
     <section className="headline-block">
       <div style={{ textAlign: "center" }}>
-        <div className="cat-label">{headline.category}</div>
+        <div className="cat-label">{lead.category}</div>
       </div>
 
       <h1 className="main-hed">
-        {hasReference ? (
-          <Link
-            href={headline.url as string}
+        {lead.sourceUrl ? (
+          <a
+            href={lead.sourceUrl}
             className="headline-link"
             target="_blank"
             rel="noopener noreferrer"
-            aria-label={`Read source for: ${headline.title}`}
+            aria-label={`Read source for: ${lead.title}`}
           >
-            {headline.title}
-          </Link>
+            {lead.title}
+          </a>
         ) : (
-          headline.title
+          lead.title
         )}
       </h1>
-      <p className="main-deck">{headline.deck}</p>
+      <p className="main-deck">{lead.deck}</p>
       <p className="byline">
-        By The Silicon Gazette AI Desk -{" "}
-        {hasReference ? (
-          <Link href={headline.url as string} className="source-link" target="_blank" rel="noopener noreferrer">
-            {headline.source}
-          </Link>
+        By The Silicon Gazette AI Desk —{" "}
+        {lead.sourceUrl ? (
+          <a href={lead.sourceUrl} className="source-link" target="_blank" rel="noopener noreferrer">
+            {lead.source}
+          </a>
         ) : (
-          headline.source
+          lead.source
+        )}
+        {lead.readMinutes > 0 && (
+          <span style={{ marginLeft: "8px", fontStyle: "normal" }}>· {lead.readMinutes} min read</span>
         )}
       </p>
 
       <div className="main-body">
-        {paragraphs.map((paragraph, idx) => (
-          <p className={idx === 0 ? "drop-cap" : undefined} key={`${paragraph.slice(0, 20)}-${idx}`}>
+        {lead.paragraphs.map((paragraph, idx) => (
+          <p className={idx === 0 ? "drop-cap" : undefined} key={`lead-para-${idx}`}>
             {paragraph}
           </p>
         ))}

@@ -3,33 +3,43 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { EditionNav } from "@/components/EditionNav";
-import { ErrorPress } from "@/components/ErrorPress";
 import { HeadlineBlock } from "@/components/HeadlineBlock";
+import { HeadlineTicker } from "@/components/HeadlineTicker";
 import { MarketStrip } from "@/components/MarketStrip";
 import { Masthead } from "@/components/Masthead";
 import { PageTurner } from "@/components/PageTurner";
 import { RepoCard } from "@/components/RepoCard";
 import { ShareButton } from "@/components/ShareButton";
+import { StickyMasthead } from "@/components/StickyMasthead";
 import { StoryCard } from "@/components/StoryCard";
+import { CommandPalette } from "@/components/CommandPalette";
+import type { CommandEntry } from "@/components/CommandPalette";
 import { compareEditionDate, computeIssueNumber, formatDisplayDate, isValidEditionDate, toEditionDate } from "@/lib/date";
 import {
   GenerationFailedError,
   NoEditionFoundError,
   getAdjacentEditionDates,
-  getEditionForPage
+  getEditionForPage,
+  getLatestEditionDate
 } from "@/lib/edition-service";
-import { generateSlug } from "@/lib/slugs";
+import { buildEditionView, CATEGORY_LABELS } from "@/lib/edition-view";
 
+// Allow up to 2 minutes for on-demand generation on today's page (PERF-02)
+export const maxDuration = 120;
+
+// Next 15: params is now a Promise
 type PageProps = {
-  params: {
+  params: Promise<{
     date: string;
-  };
+  }>;
 };
 
-export const revalidate = 3600;
+// Past editions never change; revalidate = false means they are cached indefinitely.
+// Today's edition is always rendered fresh (it is generated on demand).
+export const dynamic = "auto";
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {
-  const { date } = params;
+  const { date } = await params;
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3000";
 
   if (!isValidEditionDate(date)) {
@@ -38,30 +48,41 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     };
   }
 
-  return {
-    title: `Edition ${date}`,
-    description: `The Silicon Gazette daily issue for ${date}.`,
-    alternates: {
-      canonical: `/gazette/${date}`
-    },
-    openGraph: {
-      title: `The Silicon Gazette | ${date}`,
-      description: `Read issue ${date} of The Silicon Gazette.`,
-      url: `${baseUrl}/gazette/${date}`,
-      images: [
-        {
-          url: "/og/edition-card.svg",
-          width: 1200,
-          height: 630,
-          alt: `The Silicon Gazette edition ${date}`
-        }
-      ]
-    }
-  };
+  // Try fetching edition data for richer OG
+  try {
+    const edition = await getEditionForPage(date);
+    const view = buildEditionView(edition.content, date);
+    return {
+      title: `${view.lead.title} | ${date}`,
+      description: view.lead.deck,
+      alternates: {
+        canonical: `/gazette/${date}`
+      },
+      openGraph: {
+        title: `The Silicon Gazette | ${date}`,
+        description: view.lead.deck,
+        url: `${baseUrl}/gazette/${date}`,
+        images: [
+          {
+            url: `/og/edition-card.svg`,
+            width: 1200,
+            height: 630,
+            alt: `The Silicon Gazette edition ${date}`
+          }
+        ]
+      }
+    };
+  } catch {
+    return {
+      title: `Edition ${date}`,
+      description: `The Silicon Gazette daily issue for ${date}.`,
+      alternates: { canonical: `/gazette/${date}` }
+    };
+  }
 }
 
 export default async function GazetteDatePage({ params }: PageProps) {
-  const { date } = params;
+  const { date } = await params;
 
   if (!isValidEditionDate(date)) {
     notFound();
@@ -70,37 +91,39 @@ export default async function GazetteDatePage({ params }: PageProps) {
   try {
     const edition = await getEditionForPage(date);
     const adjacent = await getAdjacentEditionDates(date);
-    const stories = edition.content.stories;
-    const repos = edition.content.repos;
+    const view = buildEditionView(edition.content, date);
 
+    const { lead, stories, repos, sections, marketBrief } = view;
+
+    // Front-page columns: first 3 stories left, next 3 center
     const frontPageLeft = stories.slice(0, 3);
     const frontPageCenter = stories.slice(3, 6);
-    const editorialParagraphs = edition.content.headline.body.split(/\n\n+/).filter(Boolean);
 
-    const byCategory = (category: string) => stories.filter((story) => story.category === category);
-    const pickStories = (source: typeof stories, count: number) => {
-      if (source.length >= count) {
-        return source.slice(0, count);
-      }
-      const filler = stories.filter((story) => !source.includes(story)).slice(0, count - source.length);
-      return [...source, ...filler];
-    };
-
-    const aiStories = byCategory("AI");
-    const techStories = byCategory("TECH");
-    const startupStories = byCategory("STARTUP");
-    const openSourceStories = byCategory("OPEN SOURCE");
-    const hardwareStories = byCategory("HARDWARE");
-    const securityStories = byCategory("SECURITY");
-
-    const aiFocus = pickStories(aiStories, 3);
-    const techFocus = pickStories(techStories, 3);
-    const startupFocus = pickStories(startupStories, 3);
-    const marketFocus = pickStories([...startupStories, ...techStories], 3);
-    const openSourceFocus = pickStories(openSourceStories, 2);
-    const hardwareFocus = pickStories(hardwareStories, 2);
-    const securityFocus = pickStories(securityStories, 3);
-    const policyIndex = pickStories([...securityStories, ...techStories], 6);
+    // Command palette entries for ⌘K search
+    const cmdEntries: CommandEntry[] = [
+      ...stories.map((s) => ({
+        id: `story-${s.slug}`,
+        label: s.headline,
+        sublabel: `${CATEGORY_LABELS[s.category]} · ${s.source}`,
+        href: s.href,
+        category: "story" as const,
+      })),
+      ...sections.map((sec) => ({
+        id: `section-${sec.id}`,
+        label: sec.label,
+        sublabel: sec.kicker,
+        href: `#sec-${sec.id}`,
+        category: "section" as const,
+      })),
+      ...repos.map((r) => ({
+        id: `repo-${r.name}`,
+        label: r.name,
+        sublabel: r.description,
+        href: r.href,
+        category: "repo" as const,
+      })),
+      { id: "nav-archive", label: "Archive", sublabel: "All published editions", href: "/archive", category: "nav" as const },
+    ];
 
     const pages = [
       {
@@ -109,16 +132,16 @@ export default async function GazetteDatePage({ params }: PageProps) {
         subtitle: "Lead stories and repo watch",
         content: (
           <>
-            <div className="page-label">Page 1 - Front Page</div>
+            <div className="page-label">Page 1 — Front Page</div>
             <div className="issue-date">{formatDisplayDate(date)}</div>
-            <HeadlineBlock headline={edition.content.headline} />
+            <HeadlineBlock lead={lead} />
             <div className="rule-light" />
             <section className="three-col" aria-label="Front page columns">
               <section className="col">
                 <h2 className="col-head">Tech Dispatch</h2>
                 <div className="col-content">
-                  {frontPageLeft.map((story, idx) => (
-                    <StoryCard key={`${story.headline}-${idx}`} story={story} date={date} />
+                  {frontPageLeft.map((story) => (
+                    <StoryCard key={story.slug} story={story} />
                   ))}
                 </div>
               </section>
@@ -126,8 +149,8 @@ export default async function GazetteDatePage({ params }: PageProps) {
               <section className="col">
                 <h2 className="col-head">Machine Intelligence</h2>
                 <div className="col-content">
-                  {frontPageCenter.map((story, idx) => (
-                    <StoryCard key={`${story.headline}-${idx}`} story={story} date={date} />
+                  {frontPageCenter.map((story) => (
+                    <StoryCard key={story.slug} story={story} />
                   ))}
                 </div>
               </section>
@@ -135,8 +158,8 @@ export default async function GazetteDatePage({ params }: PageProps) {
               <section className="col">
                 <h2 className="col-head">The Repo Beat</h2>
                 <div className="col-content">
-                  {repos.slice(0, 5).map((repo, idx) => (
-                    <RepoCard key={`${repo.name}-${idx}`} repo={repo} />
+                  {repos.slice(0, 5).map((repo) => (
+                    <RepoCard key={repo.name} repo={repo} />
                   ))}
                 </div>
               </section>
@@ -144,142 +167,82 @@ export default async function GazetteDatePage({ params }: PageProps) {
           </>
         )
       },
-      {
-        id: "tech-ai",
-        label: "Tech & AI",
-        subtitle: "Signals from labs and platforms",
+      // Render one page per section, skipping empty sections
+      ...sections.map((section, sectionIdx) => ({
+        id: `sec-${section.id}`,
+        label: section.label,
+        subtitle: section.kicker,
         content: (
           <>
-            <div className="page-label">Page 2 - Tech and AI</div>
-            <div className="page-kicker">Research highlights, product moves, and platform shifts.</div>
-            <section className="two-col" aria-label="Tech and AI columns">
+            <div className="page-label">Page {sectionIdx + 2} — {section.label}</div>
+            <div className="page-kicker">{section.kicker}</div>
+            <section className="two-col" aria-label={`${section.label} columns`}>
               <section className="col">
-                <h2 className="col-head">Artificial Intelligence</h2>
+                <h2 className="col-head">{section.label}</h2>
                 <div className="col-content">
-                  {aiFocus.map((story, idx) => (
-                    <StoryCard key={`${story.headline}-${idx}`} story={story} date={date} />
+                  {section.stories.map((story) => (
+                    <StoryCard key={story.slug} story={story} />
                   ))}
                 </div>
               </section>
 
               <section className="col">
-                <h2 className="col-head">Industry & Platforms</h2>
-                <div className="col-content">
-                  {techFocus.map((story, idx) => (
-                    <StoryCard key={`${story.headline}-${idx}`} story={story} date={date} />
+                <h2 className="col-head">From the Wire</h2>
+                <div className="note-box">{`"`}{lead.deck}{`"`}</div>
+                <ul className="index-list" style={{ marginTop: "12px" }}>
+                  {stories.slice(0, 6).map((s) => (
+                    <li className="index-item" key={s.slug}>
+                      <span className="index-kicker">{CATEGORY_LABELS[s.category]}</span>
+                      <Link href={s.href} className="index-title">{s.headline}</Link>
+                      <span className="index-meta">{s.source}{s.readMinutes > 0 ? ` · ${s.readMinutes} min read` : ""}</span>
+                    </li>
                   ))}
-                  <div className="note-box">
-                    <strong>From the wire:</strong> {edition.content.headline.deck}
-                  </div>
-                </div>
+                </ul>
               </section>
             </section>
           </>
         )
-      },
-      {
-        id: "markets-funding",
-        label: "Markets & Funding",
-        subtitle: "Capital, deals, and momentum",
-        content: (
-          <>
-            <div className="page-label">Page 3 - Markets and Funding</div>
-            <div className="page-kicker">Venture activity, funding rounds, and market signals.</div>
-            <section className="two-col" aria-label="Markets and funding columns">
-              <section className="col">
-                <h2 className="col-head">Startup and Funding</h2>
-                <div className="col-content">
-                  {startupFocus.map((story, idx) => (
-                    <StoryCard key={`${story.headline}-${idx}`} story={story} date={date} />
-                  ))}
-                </div>
-              </section>
-
-              <section className="col">
-                <h2 className="col-head">Markets and Trends</h2>
-                <div className="col-content">
-                  {marketFocus.map((story, idx) => (
-                    <StoryCard key={`${story.headline}-${idx}`} story={story} date={date} />
-                  ))}
-                  <div className="market-panel">"{edition.content.market_brief}"</div>
-                </div>
-              </section>
-            </section>
-          </>
-        )
-      },
+      })),
       {
         id: "open-source",
         label: "Open Source",
         subtitle: "Core tooling and systems watch",
         content: (
           <>
-            <div className="page-label">Page 4 - Open Source and Systems</div>
+            <div className="page-label">Page {sections.length + 2} — Open Source & Systems</div>
             <div className="page-kicker">Community releases, hardware moves, and platform work.</div>
             <section className="three-col" aria-label="Open source columns">
               <section className="col">
                 <h2 className="col-head">Open Source Watch</h2>
                 <div className="col-content">
-                  {openSourceFocus.map((story, idx) => (
-                    <StoryCard key={`${story.headline}-${idx}`} story={story} date={date} />
+                  {stories.filter((s) => s.category === "OPEN SOURCE").map((story) => (
+                    <StoryCard key={story.slug} story={story} />
                   ))}
+                  {stories.filter((s) => s.category === "OPEN SOURCE").length === 0 && (
+                    <p className="s-body" style={{ color: "var(--muted)", fontStyle: "italic" }}>No open-source stories this edition.</p>
+                  )}
                 </div>
               </section>
 
               <section className="col">
                 <h2 className="col-head">Hardware & Systems</h2>
                 <div className="col-content">
-                  {hardwareFocus.map((story, idx) => (
-                    <StoryCard key={`${story.headline}-${idx}`} story={story} date={date} />
+                  {stories.filter((s) => s.category === "HARDWARE").map((story) => (
+                    <StoryCard key={story.slug} story={story} />
                   ))}
+                  {stories.filter((s) => s.category === "HARDWARE").length === 0 && (
+                    <p className="s-body" style={{ color: "var(--muted)", fontStyle: "italic" }}>No hardware stories this edition.</p>
+                  )}
                 </div>
               </section>
 
               <section className="col">
                 <h2 className="col-head">Repo Ledger</h2>
                 <div className="col-content">
-                  {repos.slice(0, 5).map((repo, idx) => (
-                    <RepoCard key={`${repo.name}-${idx}-ledger`} repo={repo} />
+                  {repos.map((repo) => (
+                    <RepoCard key={`${repo.name}-ledger`} repo={repo} />
                   ))}
                 </div>
-              </section>
-            </section>
-          </>
-        )
-      },
-      {
-        id: "security-policy",
-        label: "Security",
-        subtitle: "Risk, privacy, and policy",
-        content: (
-          <>
-            <div className="page-label">Page 5 - Security and Policy</div>
-            <div className="page-kicker">Threat briefings, regulation, and governance.</div>
-            <section className="two-col" aria-label="Security and policy columns">
-              <section className="col">
-                <h2 className="col-head">Security Desk</h2>
-                <div className="col-content">
-                  {securityFocus.map((story, idx) => (
-                    <StoryCard key={`${story.headline}-${idx}`} story={story} date={date} />
-                  ))}
-                </div>
-              </section>
-
-              <section className="col">
-                <h2 className="col-head">Policy Index</h2>
-                <ul className="index-list">
-                  {policyIndex.map((story, idx) => {
-                    const storyLink = `/gazette/${date}/story/${generateSlug(story.headline)}`;
-                    return (
-                      <li className="index-item" key={`${story.headline}-policy-${idx}`}>
-                        <Link href={storyLink} className="index-title">
-                          {story.headline}
-                        </Link>
-                        <span className="index-meta">{story.source}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
               </section>
             </section>
           </>
@@ -291,24 +254,24 @@ export default async function GazetteDatePage({ params }: PageProps) {
         subtitle: "Full rundown and sources",
         content: (
           <>
-            <div className="page-label">Page 6 - Wire Index</div>
+            <div className="page-label">Page {sections.length + 3} — Wire Index</div>
             <div className="page-kicker">All stories in the edition, ordered for fast reading.</div>
             <section className="one-col" aria-label="Wire index">
               <section className="col">
                 <h2 className="col-head">Edition Index</h2>
-                <ul className="index-list">
-                  {stories.map((story, idx) => {
-                    const storyLink = `/gazette/${date}/story/${generateSlug(story.headline)}`;
-                    return (
-                      <li className="index-item" key={`${story.headline}-index-${idx}`}>
-                        <span className="index-kicker">Story {idx + 1}</span>
-                        <Link href={storyLink} className="index-title">
-                          {story.headline}
-                        </Link>
-                        <span className="index-meta">{story.category} | {story.source}</span>
-                      </li>
-                    );
-                  })}
+                <ul className="index-list" role="list">
+                  {stories.map((story, idx) => (
+                    <li className="index-item" key={story.slug} role="listitem">
+                      <span className="index-kicker">Story {idx + 1}</span>
+                      <Link href={story.href} className="index-title">
+                        {story.headline}
+                      </Link>
+                      <span className="index-meta">
+                        {CATEGORY_LABELS[story.category]} | {story.source}
+                        {story.readMinutes > 0 ? ` · ${story.readMinutes} min` : ""}
+                      </span>
+                    </li>
+                  ))}
                 </ul>
               </section>
             </section>
@@ -321,14 +284,14 @@ export default async function GazetteDatePage({ params }: PageProps) {
         subtitle: "Letters, notes, and the day ahead",
         content: (
           <>
-            <div className="page-label">Page 7 - Editors Desk</div>
+            <div className="page-label">Page {sections.length + 4} — Editors Desk</div>
             <div className="page-kicker">Context from the desk and the day ahead.</div>
             <section className="two-col" aria-label="Editors desk columns">
               <section className="col">
                 <h2 className="col-head">Editors Letter</h2>
                 <div className="editorial-body">
-                  {editorialParagraphs.map((paragraph, idx) => (
-                    <p key={`${paragraph.slice(0, 20)}-${idx}`}>{paragraph}</p>
+                  {lead.paragraphs.map((paragraph, idx) => (
+                    <p key={`editorial-${idx}`} className={idx === 0 ? "drop-cap" : undefined}>{paragraph}</p>
                   ))}
                 </div>
               </section>
@@ -338,19 +301,16 @@ export default async function GazetteDatePage({ params }: PageProps) {
                 <div className="note-box">
                   Issue No. {edition.issue_num} | Vol. I
                 </div>
-                <div className="note-box">"{edition.content.market_brief}"</div>
-                <ul className="index-list">
-                  {stories.slice(0, 6).map((story, idx) => {
-                    const storyLink = `/gazette/${date}/story/${generateSlug(story.headline)}`;
-                    return (
-                      <li className="index-item" key={`${story.headline}-glance-${idx}`}>
-                        <Link href={storyLink} className="index-title">
-                          {story.headline}
-                        </Link>
-                        <span className="index-meta">{story.source}</span>
-                      </li>
-                    );
-                  })}
+                <div className="note-box">{`"`}{marketBrief}{`"`}</div>
+                <ul className="index-list" style={{ marginTop: "12px" }} role="list">
+                  {stories.slice(0, 6).map((story) => (
+                    <li className="index-item" key={`glance-${story.slug}`} role="listitem">
+                      <Link href={story.href} className="index-title">
+                        {story.headline}
+                      </Link>
+                      <span className="index-meta">{story.source}</span>
+                    </li>
+                  ))}
                 </ul>
               </section>
             </section>
@@ -363,38 +323,32 @@ export default async function GazetteDatePage({ params }: PageProps) {
         subtitle: "Market brief and highlights",
         content: (
           <>
-            <div className="page-label">Page 8 - Back Page</div>
+            <div className="page-label">Page {sections.length + 5} — Back Page</div>
             <div className="page-kicker">Final briefs, share, and closing notes.</div>
             <section className="two-col" aria-label="Back page columns">
               <section className="col">
                 <h2 className="col-head">Final Wire</h2>
                 <div className="col-content">
-                  {stories.slice(0, 6).map((story, idx) => {
-                    const storyLink = `/gazette/${date}/story/${generateSlug(story.headline)}`;
-                    return (
-                      <article className="story" key={`${story.headline}-final-${idx}`}>
-                        <p className="s-cat">Brief {idx + 1}</p>
-                        <h3 className="s-hed">
-                          <Link href={storyLink} className="headline-link">
-                            {story.headline}
-                          </Link>
-                        </h3>
-                        <p className="s-src">{story.source}</p>
-                      </article>
-                    );
-                  })}
+                  {stories.map((story) => (
+                    <article className="story" key={`final-${story.slug}`}>
+                      <p className="s-cat">
+                        <Link href={story.href} className="headline-link">{story.headline}</Link>
+                      </p>
+                      <p className="s-src">{story.source}</p>
+                    </article>
+                  ))}
                 </div>
               </section>
 
               <section className="col">
                 <h2 className="col-head">Market Brief</h2>
-                <div className="market-panel">"{edition.content.market_brief}"</div>
+                <div className="market-panel">{`"`}{marketBrief}{`"`}</div>
                 <div className="rule-light" />
                 <h2 className="col-head">Share The Edition</h2>
                 <ShareButton />
               </section>
             </section>
-            <MarketStrip brief={edition.content.market_brief} />
+            <MarketStrip brief={marketBrief} />
           </>
         )
       }
@@ -402,13 +356,17 @@ export default async function GazetteDatePage({ params }: PageProps) {
 
     return (
       <main className="paper-shell">
+        <StickyMasthead date={edition.date} issueNumber={edition.issue_num} />
         <Masthead date={edition.date} issueNumber={edition.issue_num} />
+        <HeadlineTicker headlines={stories.map((s) => s.headline)} />
         <div className="rule-heavy" />
 
         <section className="paper-body">
-          <EditionNav previousDate={adjacent.previousDate} nextDate={adjacent.nextDate} />
+          <div className="paper-toolbar">
+            <EditionNav previousDate={adjacent.previousDate} nextDate={adjacent.nextDate} />
+            <CommandPalette entries={cmdEntries} />
+          </div>
           <PageTurner pages={pages} />
-
           <EditionNav previousDate={adjacent.previousDate} nextDate={adjacent.nextDate} />
         </section>
       </main>
@@ -417,22 +375,29 @@ export default async function GazetteDatePage({ params }: PageProps) {
     if (error instanceof NoEditionFoundError) {
       const today = toEditionDate();
       const inPast = compareEditionDate(date, today) < 0;
+      const latestDate = await getLatestEditionDate();
+
+      if (inPast) {
+        // Real 404 for missing past editions
+        notFound();
+      }
 
       return (
         <main className="paper-shell">
           <Masthead date={today} issueNumber={computeIssueNumber(today)} />
           <div className="rule-heavy" />
           <div className="paper-body">
-            <ErrorPress
-              title={inPast ? "No Edition Found" : "Edition Unavailable"}
-              body={
-                inPast
-                  ? `No edition found for ${date}.`
-                  : `Edition ${date} is not available yet.`
-              }
-              detail={error.message}
-              showRetry={false}
-            />
+            <div className="err-wrap" role="alert">
+              <h2 className="err-hed">Edition Unavailable</h2>
+              <p className="err-body">
+                Edition {date} is not available yet — the presses are still running.
+              </p>
+              {latestDate && (
+                <Link className="refresh-btn" href={`/gazette/${latestDate}`}>
+                  Read Latest Edition
+                </Link>
+              )}
+            </div>
           </div>
         </main>
       );
@@ -440,17 +405,21 @@ export default async function GazetteDatePage({ params }: PageProps) {
 
     if (error instanceof GenerationFailedError) {
       const today = toEditionDate();
+      const latestDate = await getLatestEditionDate();
       return (
         <main className="paper-shell">
           <Masthead date={today} issueNumber={computeIssueNumber(today)} />
           <div className="rule-heavy" />
           <div className="paper-body">
-            <ErrorPress
-              title="Press Breakdown"
-              body="The presses hit a snag while generating this edition."
-              detail={error.message}
-              showRetry
-            />
+            <div className="err-wrap" role="alert">
+              <h2 className="err-hed">Press Breakdown</h2>
+              <p className="err-body">The presses hit a snag while generating this edition. Please try again shortly.</p>
+              {latestDate && (
+                <Link className="refresh-btn" href={`/gazette/${latestDate}`}>
+                  Read Latest Edition
+                </Link>
+              )}
+            </div>
           </div>
         </main>
       );

@@ -47,6 +47,16 @@ export interface EditionRecord {
   latency_ms: number | null;
 }
 
+export interface EditionSummary {
+  date: string;
+  issue_num: number;
+  generated_at: string;
+  title: string;
+  deck: string;
+  category: Category;
+  story_headlines: string[];
+}
+
 export interface SearchResult {
   title: string;
   url: string;

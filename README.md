@@ -17,14 +17,15 @@ This repository is currently frontend-first.
 
 ## Implemented Stack
 
-- Framework: Next.js 14 (App Router)
+- Framework: Next.js 15.5 / React 19 (App Router)
 - Language: TypeScript
-- Styling: Tailwind + custom broadsheet CSS
-- LLM: Groq (`llama-3.3-70b-versatile`)
+- Styling: Tailwind + custom broadsheet CSS; `next/font` self-hosted fonts
+- LLM: Groq (`openai/gpt-oss-120b`) with Gemini fallback (`gemini-3.6-flash`)
 - Search: Tavily Search API
 - Validation: Zod
-- DB: Neon Postgres via Drizzle ORM
+- DB: Neon Postgres via Drizzle ORM 0.45
 - Rate limiting: Upstash Redis
+- Animations: GSAP 3, Lenis smooth-scroll
 
 ## Key Features Implemented
 
@@ -53,13 +54,13 @@ Open:
 
 In `frontend`, copy `.env.example` to `.env.local` and set:
 
-- `GROQ_API_KEY`
-- `TAVILY_API_KEY`
-- `DATABASE_URL`
-- `DATABASE_URL_UNPOOLED` (optional)
-- `UPSTASH_REDIS_REST_URL` (optional)
-- `UPSTASH_REDIS_REST_TOKEN` (optional)
-- `NEXT_PUBLIC_BASE_URL`
+- `GROQ_API_KEYS` — comma-separated list of Groq API keys
+- `GEMINI_API_KEY` — Google Gemini API key (fallback provider)
+- `TAVILY_API_KEY` — Tavily search API key
+- `DATABASE_URL` — Neon Postgres connection string (pooled)
+- `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` — optional rate limiting
+- `NEXT_PUBLIC_BASE_URL` — your deployment URL (e.g. `https://thegazette.vercel.app`)
+- `CRON_SECRET` — shared secret for the `/api/gazette/generate` cron endpoint
 
 ## Database Setup (Neon + Drizzle)
 
@@ -81,5 +82,9 @@ npm run build
 
 ## Notes
 
-- Full app-specific docs are in `frontend/README.md`.
-- Product requirements and scope are documented in `plan.md`.
+- Product requirements and scope: [`plan.md`](./plan.md)
+- Broadsheet UI reference: [`SampleUI.md`](./SampleUI.md)
+- Audit & remediation checklist: [`checklist.md`](./checklist.md)
+- App-specific dev notes: [`frontend/README.md`](./frontend/README.md)
+
+> The app generates up to **12 stories** per edition (not 4 as the original SRS stated).

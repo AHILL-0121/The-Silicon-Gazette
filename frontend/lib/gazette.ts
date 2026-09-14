@@ -9,12 +9,22 @@ export const CategoryEnum = z.enum([
   "SECURITY"
 ]);
 
+// The SRS asks for at least 4 secondary stories; up to 12 are generated.
+export const MIN_STORIES = 4;
+export const MAX_STORIES = 12;
+export const REPO_COUNT = 5;
+
+const httpUrl = z
+  .string()
+  .url()
+  .refine((value) => /^https?:\/\//i.test(value), "Only http(s) URLs are allowed");
+
 const StorySchema = z.object({
-  headline: z.string().min(3).max(80),
-  summary: z.string().min(50).max(1500),
+  headline: z.string().min(3).max(160),
+  summary: z.string().min(50).max(4000),
   category: CategoryEnum,
   source: z.string().min(2),
-  url: z.string().url().optional()
+  url: httpUrl.optional()
 });
 
 const RepoSchema = z.object({
@@ -26,21 +36,21 @@ const RepoSchema = z.object({
 
 export const GazetteEditionSchema = z.object({
   headline: z.object({
-    title: z.string().min(10).max(120),
+    title: z.string().min(10).max(160),
     deck: z.string().min(20).max(300),
     body: z.string().min(100),
     category: CategoryEnum,
     source: z.string().min(2),
-    url: z.string().url().optional()
+    url: httpUrl.optional()
   }),
-  stories: z.array(StorySchema).length(12),
-  repos: z.array(RepoSchema).length(5),
+  stories: z.array(StorySchema).min(MIN_STORIES).max(MAX_STORIES),
+  repos: z.array(RepoSchema).length(REPO_COUNT),
   market_brief: z.string().min(10).max(300)
 });
 
 export type GazetteEdition = z.infer<typeof GazetteEditionSchema>;
 
-const VALID_CATEGORIES = new Set(CategoryEnum.options);
+const VALID_CATEGORIES = new Set<string>(CategoryEnum.options);
 
 function textValue(value: unknown, fallback = ""): string {
   if (typeof value === "string") {
@@ -57,37 +67,47 @@ function truncate(value: string, max: number): string {
   return value.slice(0, Math.max(0, max - 1)).trimEnd() + "…";
 }
 
-function ensureMin(value: string, min: number, filler: string): string {
-  let out = value.trim();
-  while (out.length < min) {
-    out = `${out} ${filler}`.trim();
-  }
-  return out;
-}
-
 function normalizeCategory(value: unknown): z.infer<typeof CategoryEnum> {
-  const maybe = textValue(value).toUpperCase() as z.infer<typeof CategoryEnum>;
+  const maybe = textValue(value).toUpperCase();
   if (VALID_CATEGORIES.has(maybe)) {
-    return maybe;
+    return maybe as z.infer<typeof CategoryEnum>;
   }
   return "TECH";
 }
 
-function normalizeReferenceUrl(value: unknown, fallbackQuery: string): string {
+/**
+ * Returns the URL only when it is an absolute http(s) URL. Anything else
+ * (javascript:, data:, relative paths, garbage) is dropped so it can never be
+ * rendered as a link.
+ */
+export function safeHttpUrl(value: unknown): string | undefined {
   const raw = textValue(value);
-  if (raw && /^https?:\/\//i.test(raw)) {
-    return raw;
+  if (!raw) return undefined;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString();
+    }
+  } catch {
+    return undefined;
   }
-
-  const query = encodeURIComponent(fallbackQuery.trim() || "technology news");
-  return `https://www.google.com/search?q=${query}`;
+  return undefined;
 }
 
-function normalizeRepoName(value: unknown, index: number): string {
-  const raw = textValue(value);
-  if (!raw) {
-    return `unknown/repo-${index + 1}`;
+function normalizeSourceUrl(value: unknown, allowedUrls?: Set<string>): string | undefined {
+  const url = safeHttpUrl(value);
+  if (!url) return undefined;
+  // When we know which URLs the search step returned, only keep links the
+  // model copied from them. This blocks hallucinated or injected links.
+  if (allowedUrls && allowedUrls.size > 0 && !allowedUrls.has(url)) {
+    return undefined;
   }
+  return url;
+}
+
+function normalizeRepoName(value: unknown): string | null {
+  const raw = textValue(value);
+  if (!raw) return null;
 
   const githubUrlMatch = raw.match(/github\.com\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)/i);
   if (githubUrlMatch) {
@@ -99,120 +119,170 @@ function normalizeRepoName(value: unknown, index: number): string {
     return `${slashMatch[1]}/${slashMatch[2]}`;
   }
 
-  const words = raw.split(/[^A-Za-z0-9._-]+/).filter(Boolean);
-  if (words.length >= 2) {
-    return `${words[0]}/${words[1]}`;
-  }
-
-  return `unknown/repo-${index + 1}`;
+  return null;
 }
 
-function normalizeEditionCandidate(input: unknown): unknown {
+const UNKNOWN_VALUES = /^(n\/?a|none|null|unknown|not specified|unspecified|-+|—)$/i;
+
+function normalizeStars(value: unknown): string {
+  const raw = textValue(value);
+  if (!raw || UNKNOWN_VALUES.test(raw)) return "—";
+  return truncate(raw, 32);
+}
+
+function normalizeLanguage(value: unknown): string {
+  const raw = textValue(value);
+  if (!raw || UNKNOWN_VALUES.test(raw)) return "Unknown";
+  return truncate(raw, 40);
+}
+
+const STOP_WORDS = new Set([
+  "the", "and", "for", "with", "into", "after", "from", "that", "this", "its", "over", "amid",
+  "new", "how", "why", "what", "will", "has", "have", "are", "was", "about", "across", "under"
+]);
+
+function headlineTokens(headline: string): Set<string> {
+  return new Set(
+    headline
+      .toLowerCase()
+      .replace(/[’']s\b/g, "")
+      .split(/[^a-z0-9.$]+/)
+      .map((token) => token.replace(/^\.+|\.+$/g, ""))
+      .filter((token) => (token.length > 2 || /\d/.test(token)) && !STOP_WORDS.has(token))
+  );
+}
+
+function bodyTokens(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[’']s\b/g, "")
+      .split(/[^a-z0-9$]+/)
+      .filter((token) => token.length > 3 || /\d/.test(token))
+  );
+}
+
+function sharedCount(a: Set<string>, b: Set<string>): number {
+  let shared = 0;
+  for (const token of a) {
+    if (b.has(token)) shared += 1;
+  }
+  return shared;
+}
+
+type Comparable = { headline: string; summary?: string };
+
+/**
+ * Two stories are treated as the same news event when their headlines share
+ * most distinctive words. Headline wording alone is ambiguous for short
+ * templated titles ("X Releases Y With Longer Context"), so when summaries are
+ * available they must also overlap. Thresholds were tuned against the
+ * duplicated editions stored for 2026-09-13 and 2026-09-14.
+ */
+export function isSameStory(a: Comparable, b: Comparable): boolean {
+  const ta = headlineTokens(a.headline);
+  const tb = headlineTokens(b.headline);
+  if (ta.size === 0 || tb.size === 0) {
+    return a.headline.trim().toLowerCase() === b.headline.trim().toLowerCase();
+  }
+  const shared = sharedCount(ta, tb);
+  const overlap = shared / Math.min(ta.size, tb.size);
+
+  if (a.summary && b.summary) {
+    if (overlap < 0.5 && !(shared >= 5 && overlap >= 0.45)) return false;
+    const sa = bodyTokens(a.summary);
+    const sb = bodyTokens(b.summary);
+    const common = sharedCount(sa, sb);
+    const jaccard = common / (sa.size + sb.size - common || 1);
+    return jaccard >= 0.18 || overlap >= 0.85;
+  }
+
+  return overlap >= 0.75;
+}
+
+/**
+ * Removes stories that repeat an earlier story (or the lead) while keeping at
+ * least `minimum` stories so a page is never left empty.
+ */
+export function dedupeStories<T extends Comparable>(
+  stories: T[],
+  lead?: Comparable,
+  minimum = MIN_STORIES
+): T[] {
+  const unique: T[] = [];
+  for (const story of stories) {
+    if (!unique.some((kept) => isSameStory(kept, story))) {
+      unique.push(story);
+    }
+  }
+
+  if (!lead) return unique;
+  const withoutLead = unique.filter((story) => !isSameStory(story, lead));
+  return withoutLead.length >= minimum ? withoutLead : unique;
+}
+
+export function normalizeEditionCandidate(
+  input: unknown,
+  options: { allowedUrls?: Set<string> } = {}
+): unknown {
   const payload = (input ?? {}) as Record<string, unknown>;
   const rawHeadline = (payload.headline ?? {}) as Record<string, unknown>;
   const rawStories = Array.isArray(payload.stories) ? payload.stories : [];
   const rawRepos = Array.isArray(payload.repos) ? payload.repos : [];
 
-  const headlineTitle = ensureMin(truncate(textValue(rawHeadline.title, "Daily Tech Bulletin"), 120), 10, "edition");
-  const headlineDeck = ensureMin(
-    truncate(textValue(rawHeadline.deck, "A concise look at the latest technology developments."), 300),
-    20,
-    "update"
-  );
-  const headlineBody = ensureMin(
-    truncate(
-      textValue(
-        rawHeadline.body,
-        "The newsroom assembled the latest technology developments from trusted wires.\n\nKey themes include AI releases, startup momentum, and open source shifts.\n\nReaders can expect a fuller issue as additional market details arrive."
-      ),
-      1800
-    ),
-    100,
-    "Additional reporting will follow."
-  );
+  const headlineTitle = truncate(textValue(rawHeadline.title), 160);
+  const headlineBody = textValue(rawHeadline.body);
 
-  const stories = rawStories.slice(0, 12).map((story, index) => {
-    const row = (story ?? {}) as Record<string, unknown>;
-    const headline = ensureMin(truncate(textValue(row.headline, `Wire Update ${index + 1}`), 80), 3, "update");
-    const source = ensureMin(truncate(textValue(row.source, "Newswire"), 80), 2, "wire");
-    return {
-      headline,
-      summary: ensureMin(
-        truncate(
-          textValue(
-            row.summary,
-            "Developments continue to evolve across the sector as teams ship updates and respond to market pressure. Additional reporting is being compiled for this section. More details are expected as the story develops."
-          ),
-          1500
-        ),
-        50,
-        "More details are expected."
-      ),
-      category: normalizeCategory(row.category),
-      source,
-      url: normalizeReferenceUrl(row.url, `${headline} ${source}`)
-    };
-  });
+  const stories = rawStories
+    .map((story) => {
+      const row = (story ?? {}) as Record<string, unknown>;
+      return {
+        headline: truncate(textValue(row.headline), 160),
+        summary: truncate(textValue(row.summary), 4000),
+        category: normalizeCategory(row.category),
+        source: truncate(textValue(row.source, "Newswire"), 80),
+        url: normalizeSourceUrl(row.url, options.allowedUrls)
+      };
+    })
+    // Empty model output is dropped instead of being padded with filler copy.
+    .filter((story) => story.headline.length >= 3 && story.summary.length >= 50);
 
-  while (stories.length < 12) {
-    const idx = stories.length + 1;
-    stories.push({
-      headline: `Wire Update ${idx}`,
-      summary:
-        "Developments continue to evolve across the sector as teams ship updates and respond to market pressure.",
-      category: "TECH",
-      source: "Newswire",
-      url: normalizeReferenceUrl("", `Wire Update ${idx} technology`) 
-    });
-  }
-
-  const repos = rawRepos.slice(0, 5).map((repo, index) => {
+  const repos: Array<{ name: string; description: string; stars: string; language: string }> = [];
+  for (const repo of rawRepos) {
     const row = (repo ?? {}) as Record<string, unknown>;
-    return {
-      name: normalizeRepoName(row.name, index),
-      description: ensureMin(
-        truncate(textValue(row.description, "Repository activity is rising as contributors add new commits."), 200),
-        5,
-        "update"
-      ),
-      stars: ensureMin(truncate(textValue(row.stars, "0"), 32), 1, "0"),
-      language: ensureMin(truncate(textValue(row.language, "Unknown"), 40), 1, "Unknown")
-    };
-  });
-
-  while (repos.length < 5) {
-    const idx = repos.length + 1;
+    const name = normalizeRepoName(row.name);
+    if (!name || repos.some((existing) => existing.name.toLowerCase() === name.toLowerCase())) {
+      continue;
+    }
     repos.push({
-      name: `unknown/repo-${idx}`,
-      description: "Repository activity is rising as contributors add new commits.",
-      stars: "0",
-      language: "Unknown"
+      name,
+      description: truncate(textValue(row.description, "Repository gaining attention on GitHub."), 200),
+      stars: normalizeStars(row.stars),
+      language: normalizeLanguage(row.language)
     });
   }
 
   return {
     headline: {
       title: headlineTitle,
-      deck: headlineDeck,
+      deck: truncate(textValue(rawHeadline.deck), 300),
       body: headlineBody,
       category: normalizeCategory(rawHeadline.category),
-      source: ensureMin(truncate(textValue(rawHeadline.source, "Newswire"), 80), 2, "wire"),
-      url: normalizeReferenceUrl(rawHeadline.url, `${headlineTitle} ${textValue(rawHeadline.source, "Newswire")}`)
+      source: truncate(textValue(rawHeadline.source, "Newswire"), 80),
+      url: normalizeSourceUrl(rawHeadline.url, options.allowedUrls)
     },
-    stories,
-    repos,
-    market_brief: ensureMin(
-      truncate(
-        textValue(
-          payload.market_brief,
-          "Tech sentiment is cautiously bullish as AI shipping cadence stays strong."
-        ),
-        300
-      ),
-      10,
-      "outlook"
-    )
+    stories: dedupeStories(stories, { headline: headlineTitle, summary: headlineBody }).slice(0, MAX_STORIES),
+    repos: repos.slice(0, REPO_COUNT),
+    market_brief: truncate(textValue(payload.market_brief), 300)
   };
+}
+
+/**
+ * Normalizes raw model output and validates it against the edition schema.
+ * Throws a ZodError when the edition is not publishable.
+ */
+export function normalizeEdition(input: unknown, options: { allowedUrls?: Set<string> } = {}): GazetteEdition {
+  return GazetteEditionSchema.parse(normalizeEditionCandidate(input, options));
 }
 
 type JsonShape = "object" | "array";
@@ -314,8 +384,7 @@ export function parseModelJsonValue(raw: string, shape: JsonShape): unknown {
   throw new Error(`Failed to parse model JSON: ${message}`);
 }
 
-export function parseModelJson(raw: string): GazetteEdition {
-  const parsed = parseModelJsonValue(raw, "object");
-  const normalized = normalizeEditionCandidate(parsed);
-  return GazetteEditionSchema.parse(normalized);
+export function isRateLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("429") || message.includes("rate_limit_exceeded");
 }

@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/gazette/generate",
-      "schedule": "0 6 * * *"
+      "schedule": "30 0 * * *"
     }
   ]
 }

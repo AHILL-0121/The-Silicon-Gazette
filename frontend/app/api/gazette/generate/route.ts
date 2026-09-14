@@ -1,9 +1,15 @@
+import { timingSafeEqual } from "node:crypto";
+
 import { NextResponse } from "next/server";
 
-import { isValidEditionDate, toEditionDate } from "@/lib/date";
+import { compareEditionDate, isValidEditionDate, toEditionDate } from "@/lib/date";
 import { GenerationFailedError, getEditionForDate } from "@/lib/edition-service";
 import { logServerError } from "@/lib/logger";
 import { checkGenerateRateLimit } from "@/lib/rate-limit";
+
+// The pipeline makes several LLM calls; stored editions took 79-94 s.
+export const maxDuration = 300;
+export const dynamic = "force-dynamic";
 
 function getIpIdentifier(req: Request): string {
   return (
@@ -13,9 +19,29 @@ function getIpIdentifier(req: Request): string {
   );
 }
 
-async function runGeneration(date: string) {
+/** True when the request carries `Authorization: Bearer <CRON_SECRET>`. */
+function hasCronSecret(req: Request): boolean {
+  const secret = process.env.CRON_SECRET;
+  const header = req.headers.get("authorization");
+  if (!secret || !header) return false;
+  const expected = Buffer.from(`Bearer ${secret}`);
+  const received = Buffer.from(header);
+  return expected.length === received.length && timingSafeEqual(expected, received);
+}
+
+async function runGeneration(date: string, trusted: boolean) {
   if (!isValidEditionDate(date)) {
     return NextResponse.json({ error: "Invalid date format. Use YYYY-MM-DD." }, { status: 400 });
+  }
+
+  const today = toEditionDate();
+  // Anonymous callers may only print today's paper. Trusted callers (cron,
+  // maintainers) may backfill past dates, but nobody can print the future.
+  if (compareEditionDate(date, today) > 0 || (!trusted && date !== today)) {
+    return NextResponse.json(
+      { error: trusted ? "Future editions cannot be generated." : `Only today's edition (${today}) can be generated.` },
+      { status: 403 }
+    );
   }
 
   try {
@@ -30,29 +56,33 @@ async function runGeneration(date: string) {
       latency_ms: result.edition.latency_ms
     });
   } catch (error) {
-    if (error instanceof GenerationFailedError) {
-      return NextResponse.json({ error: error.message }, { status: 503 });
+    if (!(error instanceof GenerationFailedError)) {
+      logServerError("api:generate-edition", error);
     }
-
-    logServerError("api:generate-edition", error);
     return NextResponse.json({ error: "Generation failed after retry. Press breakdown." }, { status: 503 });
   }
 }
 
-export async function POST(req: Request) {
-  const ip = getIpIdentifier(req);
-  const rate = await checkGenerateRateLimit(ip);
-  if (!rate.success) {
-    return NextResponse.json(
-      { error: "Rate limit exceeded. Try again later." },
-      {
-        status: 429,
-        headers: {
-          "X-RateLimit-Remaining": String(rate.remaining),
-          "X-RateLimit-Reset": String(rate.reset)
-        }
+async function rateLimitResponse(req: Request) {
+  const rate = await checkGenerateRateLimit(getIpIdentifier(req));
+  if (rate.success) return null;
+  return NextResponse.json(
+    { error: "Rate limit exceeded. Try again later." },
+    {
+      status: 429,
+      headers: {
+        "X-RateLimit-Remaining": String(rate.remaining),
+        "X-RateLimit-Reset": String(rate.reset)
       }
-    );
+    }
+  );
+}
+
+export async function POST(req: Request) {
+  const trusted = hasCronSecret(req);
+  if (!trusted) {
+    const limited = await rateLimitResponse(req);
+    if (limited) return limited;
   }
 
   let payload: { date?: string } = {};
@@ -62,11 +92,20 @@ export async function POST(req: Request) {
     payload = {};
   }
 
-  const date = payload.date ?? toEditionDate();
-  return runGeneration(date);
+  return runGeneration(payload.date ?? toEditionDate(), trusted);
 }
 
+/** Vercel Cron entry point. Sends `Authorization: Bearer $CRON_SECRET` when that env var is set. */
 export async function GET(req: Request) {
+  const trusted = hasCronSecret(req);
+  if (process.env.CRON_SECRET && !trusted) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!trusted) {
+    const limited = await rateLimitResponse(req);
+    if (limited) return limited;
+  }
+
   const date = new URL(req.url).searchParams.get("date") ?? toEditionDate();
-  return runGeneration(date);
+  return runGeneration(date, trusted);
 }

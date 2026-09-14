@@ -1,22 +1,30 @@
 import Groq from "groq-sdk";
 
-import { parseModelJsonValue } from "./gazette";
-import type { Category, GazetteEdition, Story } from "./types";
+import { isRateLimitError, parseModelJsonValue } from "./gazette";
+import type { Category } from "./types";
 
 const MODEL_NAME = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 
-const VALID_CATEGORIES: Category[] = ["AI", "TECH", "OPEN SOURCE", "STARTUP", "HARDWARE", "SECURITY"];
+export type RawEdition = {
+  headline?: unknown;
+  stories: unknown[];
+  repos?: unknown;
+  market_brief?: unknown;
+};
 
-function isValidCategory(value: unknown): value is Category {
-  return typeof value === "string" && VALID_CATEGORIES.includes(value as Category);
-}
-
-function normalizeCategory(value: unknown): Category {
-  if (isValidCategory(value)) {
-    return value;
-  }
-  return "TECH";
-}
+/**
+ * Story sections, one model call each. Counts add up to the 12 stories the
+ * edition layout is designed for, and each section maps to one category so
+ * the section pages are filled without repeating stories.
+ */
+export const STORY_SECTIONS: Array<{ name: string; category: Category; count: number }> = [
+  { name: "Machine Intelligence", category: "AI", count: 3 },
+  { name: "Tech Dispatch", category: "TECH", count: 2 },
+  { name: "Startup & Funding", category: "STARTUP", count: 2 },
+  { name: "Open Source", category: "OPEN SOURCE", count: 2 },
+  { name: "Hardware & Systems", category: "HARDWARE", count: 1 },
+  { name: "Security & Privacy", category: "SECURITY", count: 2 }
+];
 
 function getGroqApiKeys(): string[] {
   const keys = new Set<string>();
@@ -36,76 +44,79 @@ function getGroqApiKeys(): string[] {
   return Array.from(keys);
 }
 
-function isRateLimitError(message: string): boolean {
-  return message.includes("429") || message.includes("rate_limit_exceeded");
-}
-
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function buildSystemPrompt(): string {
+export function buildSystemPrompt(): string {
   return `You are the editor of The Silicon Gazette, a daily broadsheet for the tech industry.
-Your task is to compose today's edition using ONLY the news provided below as your source material.
-Respond with a single, valid JSON object. Do not include markdown fencing or any explanatory text.`;
+Compose today's edition using ONLY the news provided in the search results as source material.
+Never invent companies, numbers, quotes or links. Respond with valid JSON only, no markdown fencing or commentary.`;
 }
 
-function buildSectionPrompt(sectionName: string, storyCount: number): string {
-  return `Generate exactly ${storyCount} news stories for the "${sectionName}" section.
-Respond with ONLY a valid JSON array of objects with this exact structure (no markdown, no explanation):
+function formatExclusions(usedHeadlines: string[]): string {
+  if (usedHeadlines.length === 0) return "";
+  return `
+Already covered elsewhere in this edition (do NOT write about these events again, even with different wording):
+${usedHeadlines.map((headline) => `- ${headline}`).join("\n")}
+`;
+}
+
+export function buildSectionPrompt(
+  section: { name: string; category: Category; count: number },
+  usedHeadlines: string[]
+): string {
+  return `Write up to ${section.count} news stories for the "${section.name}" section (category ${section.category}).
+Respond with ONLY a JSON array:
 [
   {
     "headline": string,
     "summary": string,
     "category": "AI"|"TECH"|"OPEN SOURCE"|"STARTUP"|"HARDWARE"|"SECURITY",
-    "source": string
+    "source": string,
+    "url": string
   }
 ]
-
+${formatExclusions(usedHeadlines)}
 Rules:
-- Each story must have headline, summary, category, and source
-- Summary must be 2-3 detailed paragraphs (200-400 words) with comprehensive analysis
-- Write as an editor's detailed summary, not just a headline
-- Include context, implications, and background
-- Category should match the section theme
-- Keep prose in newspaper style`;
+- Every story must cover a DIFFERENT news event from the search results.
+- If there are fewer distinct events that fit this section, return fewer stories rather than repeating one.
+- headline: newspaper style, at most 14 words.
+- summary: 2-3 paragraphs separated by \\n\\n, 150-250 words in total, with context and implications.
+- source: the publication name of the result you used.
+- url: copy the exact URL of the result you used from the search results.`;
 }
 
-function buildMainEditionPrompt(date: string): string {
+export function buildMainEditionPrompt(date: string): string {
   return `Today's date: ${date}
 
-Generate the main edition metadata as a valid JSON object with this exact structure (no markdown, no explanation):
+Generate the lead story and repository watch as a JSON object:
 {
   "headline": {
     "title": string,
     "deck": string,
     "body": string,
     "category": "AI"|"TECH"|"OPEN SOURCE"|"STARTUP"|"HARDWARE"|"SECURITY",
-    "source": string
+    "source": string,
+    "url": string
   },
   "repos": [
-    {
-      "name": string (must be owner/repo format),
-      "description": string,
-      "stars": string,
-      "language": string
-    }
+    { "name": string, "description": string, "stars": string, "language": string }
   ],
-  "market_brief": string (single sentence under 220 characters)
+  "market_brief": string
 }
 
 Rules:
-- Headline body must contain exactly 3 paragraphs separated by \n\n
-- Return exactly 5 repos
-- Every repos[i].name MUST be exactly owner/repo format (example: facebook/react)
-- market_brief is the market/tech brief for today`;
+- headline.title: 7-12 word headline for the single most important story.
+- headline.deck: 1-2 sentence subheading.
+- headline.body: exactly 3 paragraphs separated by \\n\\n.
+- headline.url: copy the exact URL of the main source from the search results.
+- repos: exactly 5 distinct GitHub repositories mentioned in the search results, name in owner/repo format.
+- repos[].stars: star count from the results (e.g. "14.2k"), or "—" if unknown. Never guess.
+- market_brief: one sentence under 220 characters.`;
 }
 
-async function generateSection(
-  searchContext: string,
-  sectionName: string,
-  storyCount: number
-): Promise<Story[]> {
+async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<string> {
   const apiKeys = getGroqApiKeys();
   if (apiKeys.length === 0) {
     throw new Error("GROQ_API_KEY is not configured");
@@ -116,48 +127,24 @@ async function generateSection(
     const groq = new Groq({ apiKey: apiKeys[keyIndex] });
     for (let attempt = 0; attempt <= 1; attempt += 1) {
       try {
-        const userPrompt = `${searchContext}\n\n${buildSectionPrompt(sectionName, storyCount)}`;
-
         const completion = await groq.chat.completions.create({
           model: MODEL_NAME,
-          max_tokens: 2000,
+          max_tokens: maxTokens,
           temperature: 0.4,
           messages: [
             { role: "system", content: buildSystemPrompt() },
-            {
-              role: "user",
-              content: userPrompt
-            }
+            { role: "user", content: userPrompt }
           ]
         });
-
-        const raw = completion.choices[0]?.message?.content ?? "";
-        const parsed = parseModelJsonValue(raw, "array");
-
-        if (!Array.isArray(parsed)) {
-          throw new Error("Expected array of stories");
-        }
-
-        return parsed.map((story: unknown) => {
-          const storyObj = story as Record<string, unknown>;
-          return {
-            headline: String(storyObj.headline || ""),
-            summary: String(storyObj.summary || ""),
-            category: normalizeCategory(storyObj.category),
-            source: String(storyObj.source || "Gazette Desk")
-          };
-        });
+        return completion.choices[0]?.message?.content ?? "";
       } catch (error) {
         lastError = error;
-
-        const message = error instanceof Error ? error.message : String(error);
-        if (isRateLimitError(message)) {
+        if (isRateLimitError(error)) {
           if (keyIndex < apiKeys.length - 1) {
             console.warn(`Groq rate limit hit. Switching keys (${keyIndex + 1}/${apiKeys.length}).`);
           }
           break;
         }
-
         if (attempt < 1) {
           await wait(300);
         }
@@ -168,117 +155,44 @@ async function generateSection(
   throw lastError;
 }
 
-async function generateMainEdition(date: string, searchContext: string): Promise<Partial<GazetteEdition>> {
-  const apiKeys = getGroqApiKeys();
-  if (apiKeys.length === 0) {
-    throw new Error("GROQ_API_KEY is not configured");
-  }
+export async function generateGazette(date: string, searchContext: string): Promise<RawEdition> {
+  const mainRaw = await completeWithGroq(`${searchContext}\n\n${buildMainEditionPrompt(date)}`, 2000);
+  const mainEdition = parseModelJsonValue(mainRaw, "object") as Record<string, unknown>;
 
-  let lastError: unknown;
-  for (let keyIndex = 0; keyIndex < apiKeys.length; keyIndex += 1) {
-    const groq = new Groq({ apiKey: apiKeys[keyIndex] });
-    for (let attempt = 0; attempt <= 1; attempt += 1) {
-      try {
-        const userPrompt = `${searchContext}\n\n${buildMainEditionPrompt(date)}`;
+  const leadTitle = (mainEdition.headline as { title?: unknown } | undefined)?.title;
+  const usedHeadlines: string[] = typeof leadTitle === "string" ? [leadTitle] : [];
+  const stories: unknown[] = [];
 
-        const completion = await groq.chat.completions.create({
-          model: MODEL_NAME,
-          max_tokens: 2000,
-          temperature: 0.4,
-          messages: [
-            { role: "system", content: buildSystemPrompt() },
-            {
-              role: "user",
-              content: userPrompt
-            }
-          ]
-        });
-
-        const raw = completion.choices[0]?.message?.content ?? "";
-        const parsed = parseModelJsonValue(raw, "object");
-        return parsed as Partial<GazetteEdition>;
-      } catch (error) {
-        lastError = error;
-
-        const message = error instanceof Error ? error.message : String(error);
-        if (isRateLimitError(message)) {
-          if (keyIndex < apiKeys.length - 1) {
-            console.warn(`Groq rate limit hit. Switching keys (${keyIndex + 1}/${apiKeys.length}).`);
-          }
-          break;
-        }
-
-        if (attempt < 1) {
-          await wait(300);
-        }
-      }
-    }
-  }
-
-  throw lastError;
-}
-
-export async function generateGazette(date: string, searchContext: string): Promise<GazetteEdition> {
-  // Generate main edition metadata and repos first
-  const mainEdition = await generateMainEdition(date, searchContext);
-
-  // Generate stories for each section with separate API calls
-  // This avoids hitting rate limits by spreading token usage
-  const sections = [
-    { name: "Tech Dispatch", count: 3 },
-    { name: "Markets & Trends", count: 3 },
-    { name: "Startup & Funding", count: 2 },
-    { name: "Open Source", count: 1 },
-    { name: "Hardware & Systems", count: 1 },
-    { name: "Security & Privacy", count: 1 }
-  ];
-
-  const allStories: Story[] = [];
-
-  // Generate stories sequentially with small delays between calls
-  for (const section of sections) {
+  // Sections run sequentially so each call knows which events are already
+  // covered; this is what prevents the same story appearing 3-4 times.
+  for (const section of STORY_SECTIONS) {
     try {
-      const sectionStories = await generateSection(searchContext, section.name, section.count);
-      allStories.push(...sectionStories);
-
-      // Small delay between API calls to avoid rate limits
-      if (section !== sections[sections.length - 1]) {
-        await wait(200);
+      const raw = await completeWithGroq(
+        `${searchContext}\n\n${buildSectionPrompt(section, usedHeadlines)}`,
+        2000
+      );
+      const parsed = parseModelJsonValue(raw, "array") as Array<Record<string, unknown> | null>;
+      for (const story of parsed.slice(0, section.count)) {
+        if (!story) continue;
+        stories.push({ ...story, category: story.category ?? section.category });
+        if (typeof story.headline === "string") usedHeadlines.push(story.headline);
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      // If it's a rate limit, fail fast - don't try remaining sections
-      if (message.includes("429") || message.includes("rate_limit_exceeded")) {
+      if (isRateLimitError(error)) {
         console.error(`Rate limit hit at ${section.name} section, failing immediately`);
         throw error;
       }
-
+      // A failed section is skipped; validation later decides whether enough
+      // stories remain to publish. No filler copy is invented.
       console.error(`Failed to generate ${section.name} section:`, error);
-      // Add fallback stories if section generation fails for other reasons
-      for (let i = 0; i < section.count; i++) {
-        allStories.push({
-          headline: `${section.name} Story ${i + 1}`,
-          summary: "Additional reporting is being compiled for this section as our newsroom continues to monitor developments. More details are expected as the situation evolves and new information becomes available from primary sources. This story will be updated as facts emerge.",
-          category: "TECH",
-          source: "Gazette Desk"
-        });
-      }
     }
   }
 
   return {
-    headline:
-      mainEdition.headline || {
-        title: "The Silicon Gazette",
-        deck: "Tech News and Updates",
-        body: "Latest developments in technology.\n\nIndustry trends and innovations.\n\nMarket movements and insights.",
-        category: "TECH",
-        source: "Gazette Desk"
-      },
-    stories: allStories.slice(0, 12), // Ensure exactly 12 stories
-    repos: mainEdition.repos || [],
-    market_brief: mainEdition.market_brief || "Markets continue to evolve in the tech sector."
+    headline: mainEdition.headline,
+    stories,
+    repos: mainEdition.repos,
+    market_brief: mainEdition.market_brief
   };
 }
 

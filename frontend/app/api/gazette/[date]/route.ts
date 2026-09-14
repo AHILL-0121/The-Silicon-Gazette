@@ -4,14 +4,16 @@ import { isValidEditionDate } from "@/lib/date";
 import { getEditionForDate } from "@/lib/edition-service";
 import { logServerError } from "@/lib/logger";
 
+export const dynamic = "force-dynamic";
+
 type RouteContext = {
-  params: {
+  params: Promise<{
     date: string;
-  };
+  }>;
 };
 
 export async function GET(_: Request, { params }: RouteContext) {
-  const { date } = params;
+  const { date } = await params;
   if (!isValidEditionDate(date)) {
     return NextResponse.json({ error: "Invalid date format. Use YYYY-MM-DD." }, { status: 400 });
   }

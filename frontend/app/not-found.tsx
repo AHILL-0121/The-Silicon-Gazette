@@ -1,9 +1,8 @@
 import Link from "next/link";
 
-import { toEditionDate } from "@/lib/date";
-
 export default function NotFound() {
-  const today = toEditionDate();
+  // SEO-05: link to "/" which redirects dynamically to today's edition,
+  // rather than hard-coding the build date in the generated HTML.
   return (
     <main className="paper-shell">
       <div className="paper-body centered-block">
@@ -11,7 +10,7 @@ export default function NotFound() {
         <p className="err-body">
           That edition URL does not exist. Return to today&apos;s paper and spin up the latest issue.
         </p>
-        <Link className="refresh-btn" href={`/gazette/${today}`}>
+        <Link className="refresh-btn" href="/">
           Read Today&apos;s Edition
         </Link>
       </div>
