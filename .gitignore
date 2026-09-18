@@ -28,6 +28,10 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 
+# Personal scratch notes stay local; project docs are committed so the
+# README links work on GitHub.
 *.md
 !README.md
+!frontend/README.md
+
 

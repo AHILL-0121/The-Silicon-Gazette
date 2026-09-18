@@ -28,11 +28,14 @@ export function buildStorySlugs(headlines: string[]): string[] {
 }
 
 /**
- * Find a story by its slug from a list of Story objects.
- * Used by the story page as a backward-compat helper.
+ * The slug algorithm used before 2026-09 (no accent folding, no trimming).
+ * Kept only so links shared from older editions still resolve.
  */
-export function findStoryBySlug<T extends { headline: string }>(stories: T[], slug: string): T | undefined {
-  const slugs = buildStorySlugs(stories.map((s) => s.headline));
-  const idx = slugs.findIndex((s) => s === slug);
-  return idx >= 0 ? stories[idx] : undefined;
+export function legacySlug(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 80);
 }

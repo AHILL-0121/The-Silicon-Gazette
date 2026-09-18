@@ -1,196 +1,274 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
-interface CommandEntry {
-    id: string;
-    label: string;
-    sublabel?: string;
-    href: string;
-    category: "story" | "section" | "repo" | "nav";
+import { track } from "@/lib/analytics/client";
+import { getLenis, scrollToTarget } from "./SmoothScroll";
+
+export type CommandGroup = "Sections" | "Stories" | "Repositories" | "Editions" | "Go to";
+
+export interface CommandEntry {
+  id: string;
+  label: string;
+  hint?: string;
+  href: string;
+  group: CommandGroup;
 }
 
-interface CommandPaletteProps {
-    entries: CommandEntry[];
+const GROUP_ORDER: CommandGroup[] = ["Sections", "Stories", "Repositories", "Editions", "Go to"];
+
+function score(entry: CommandEntry, terms: string[]): number {
+  if (terms.length === 0) return 1;
+  const label = entry.label.toLowerCase();
+  const haystack = `${label} ${entry.hint?.toLowerCase() ?? ""} ${entry.group.toLowerCase()}`;
+  let total = 0;
+  for (const term of terms) {
+    if (!haystack.includes(term)) return 0;
+    total += label.startsWith(term) ? 3 : label.includes(term) ? 2 : 1;
+  }
+  return total;
 }
 
-export function CommandPalette({ entries }: CommandPaletteProps) {
-    const [open, setOpen] = useState(false);
-    const [query, setQuery] = useState("");
-    const [activeIdx, setActiveIdx] = useState(0);
-    const inputRef = useRef<HTMLInputElement>(null);
-    const listRef = useRef<HTMLUListElement>(null);
-    const router = useRouter();
+function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  return Boolean(el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName)));
+}
 
-    const filtered = query.trim()
-        ? entries.filter(
-            (e) =>
-                e.label.toLowerCase().includes(query.toLowerCase()) ||
-                e.sublabel?.toLowerCase().includes(query.toLowerCase())
-        )
-        : entries.slice(0, 12);
+/** Opens the palette from any button. */
+export function openCommandPalette(): void {
+  window.dispatchEvent(new Event("sg:open-palette"));
+}
 
-    // ⌘K / Ctrl+K or "/" to open
-    useEffect(() => {
-        function onKey(event: KeyboardEvent) {
-            const tag = (event.target as HTMLElement).tagName;
-            if (tag === "INPUT" || tag === "TEXTAREA") return;
+/**
+ * Ctrl/⌘ K or "/" command palette to jump to any section, story, repository
+ * or edition. Modelled on 21st.dev's Command Palette, built as an accessible
+ * combobox driving a listbox.
+ */
+export function CommandPalette({ entries }: { entries: CommandEntry[] }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const listId = useId();
 
-            if ((event.key === "k" && (event.metaKey || event.ctrlKey)) || event.key === "/") {
-                event.preventDefault();
-                setOpen(true);
-            }
-            if (event.key === "Escape") {
-                setOpen(false);
-                setQuery("");
-            }
-        }
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-    }, []);
+  const results = useMemo(() => {
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const ranked = entries
+      .map((entry) => ({ entry, score: score(entry, terms) }))
+      .filter((item) => item.score > 0);
+    if (terms.length > 0) ranked.sort((a, b) => b.score - a.score);
+    // Groups stay together in a fixed order; rank is kept inside each group.
+    return GROUP_ORDER.flatMap((group) =>
+      ranked.filter((item) => item.entry.group === group).map((item) => item.entry)
+    ).slice(0, 50);
+  }, [entries, query]);
 
-    useEffect(() => {
-        if (open) {
-            inputRef.current?.focus();
-            setActiveIdx(0);
-        }
-    }, [open]);
+  const openPalette = useCallback((via: "ctrl_k" | "slash" | "button" = "button") => {
+    returnFocus.current = document.activeElement as HTMLElement | null;
+    setQuery("");
+    setActive(0);
+    setOpen(true);
+    track("palette_open", { via });
+  }, []);
 
-    useEffect(() => {
-        setActiveIdx(0);
-    }, [query]);
+  const close = useCallback(() => {
+    setOpen(false);
+    returnFocus.current?.focus?.();
+  }, []);
 
-    function handleKeyDown(event: React.KeyboardEvent) {
-        if (event.key === "ArrowDown") {
-            event.preventDefault();
-            setActiveIdx((i) => Math.min(i + 1, filtered.length - 1));
-        } else if (event.key === "ArrowUp") {
-            event.preventDefault();
-            setActiveIdx((i) => Math.max(i - 1, 0));
-        } else if (event.key === "Enter") {
-            const entry = filtered[activeIdx];
-            if (entry) {
-                navigate(entry.href);
-            }
-        } else if (event.key === "Escape") {
-            setOpen(false);
-            setQuery("");
-        }
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (open) close();
+        else openPalette("ctrl_k");
+      } else if (
+        event.key === "/" &&
+        !open &&
+        !isTypingTarget(event.target) &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        openPalette("slash");
+      }
+    };
+    const onOpenPalette = () => openPalette("button");
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("sg:open-palette", onOpenPalette);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("sg:open-palette", onOpenPalette);
+    };
+  }, [open, close, openPalette]);
+
+  useEffect(() => {
+    if (!open) return;
+    getLenis()?.stop();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    inputRef.current?.focus();
+    return () => {
+      getLenis()?.start();
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [open]);
+
+  useEffect(() => {
+    listRef.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+
+  function choose(entry: CommandEntry) {
+    track("palette_search", { results: results.length, chose: true });
+    setOpen(false);
+    if (entry.href.startsWith("#")) {
+      const target = document.getElementById(entry.href.slice(1));
+      if (target) {
+        history.replaceState(null, "", entry.href);
+        scrollToTarget(target, -96);
+        target.focus({ preventScroll: true });
+      }
+      return;
     }
-
-    // Scroll active item into view
-    useEffect(() => {
-        const list = listRef.current;
-        if (!list) return;
-        const item = list.children[activeIdx] as HTMLElement | undefined;
-        item?.scrollIntoView({ block: "nearest" });
-    }, [activeIdx]);
-
-    function navigate(href: string) {
-        setOpen(false);
-        setQuery("");
-        router.push(href);
+    if (/^https?:\/\//.test(entry.href)) {
+      window.open(entry.href, "_blank", "noopener,noreferrer");
+      return;
     }
+    router.push(entry.href);
+  }
 
-    function categoryIcon(cat: CommandEntry["category"]) {
-        if (cat === "story") return "📰";
-        if (cat === "section") return "📑";
-        if (cat === "repo") return "🔗";
-        return "⬡";
+  function onInputKey(event: React.KeyboardEvent<HTMLInputElement>) {
+    const count = results.length;
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        setActive((index) => (count ? (index + 1) % count : 0));
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        setActive((index) => (count ? (index - 1 + count) % count : 0));
+        break;
+      case "Enter": {
+        event.preventDefault();
+        const entry = results[active];
+        if (entry) choose(entry);
+        break;
+      }
+      case "Escape":
+        event.preventDefault();
+        close();
+        break;
+      case "Tab":
+        // Focus stays inside the dialog; the input is its only tab stop.
+        event.preventDefault();
+        break;
     }
+  }
 
-    if (!open) {
-        return (
-            <button
-                className="cmd-trigger"
-                onClick={() => setOpen(true)}
-                type="button"
-                aria-label="Open command palette (⌘K)"
-                title="Search stories & sections (⌘K or /)"
-            >
-                <span className="cmd-trigger__icon">⌘</span>
-                <span className="cmd-trigger__label">Search</span>
-                <kbd className="cmd-trigger__kbd">⌘K</kbd>
-            </button>
-        );
-    }
+  if (!open) return null;
 
-    return (
-        <div
-            className="cmd-overlay"
-            onClick={(e) => {
-                if (e.target === e.currentTarget) {
-                    setOpen(false);
-                    setQuery("");
-                }
+  let lastGroup: CommandGroup | null = null;
+  return (
+    <div className="fixed inset-0 z-[80] flex items-start justify-center px-3 pt-[12vh]">
+      <div className="absolute inset-0 bg-ink/40 backdrop-blur-sm" onClick={close} aria-hidden="true" />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Search"
+        className="relative w-full max-w-xl animate-fade-up overflow-hidden rounded-2xl border border-rule bg-surface shadow-2xl"
+      >
+        <div className="flex items-center gap-3 border-b border-rule px-4">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" className="shrink-0 text-muted">
+            <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+            <path d="m10.5 10.5 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setActive(0);
             }}
-            role="dialog"
-            aria-label="Command palette"
-            aria-modal="true"
-        >
-            <div className="cmd-modal">
-                <div className="cmd-input-wrap">
-                    <span className="cmd-input-icon" aria-hidden="true">⌕</span>
-                    <input
-                        ref={inputRef}
-                        className="cmd-input"
-                        type="text"
-                        placeholder="Search stories, sections, repos…"
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        aria-label="Search"
-                        aria-autocomplete="list"
-                        aria-controls="cmd-list"
-                        aria-activedescendant={filtered[activeIdx] ? `cmd-item-${filtered[activeIdx].id}` : undefined}
-                        autoComplete="off"
-                        spellCheck={false}
-                    />
-                    <kbd className="cmd-esc-hint" onClick={() => { setOpen(false); setQuery(""); }}>ESC</kbd>
-                </div>
-
-                <ul
-                    className="cmd-list"
-                    id="cmd-list"
-                    role="listbox"
-                    ref={listRef}
-                    aria-label="Search results"
-                >
-                    {filtered.length === 0 && (
-                        <li className="cmd-empty" role="option" aria-selected="false">
-                            No results for <strong>{query}</strong>
-                        </li>
-                    )}
-                    {filtered.map((entry, idx) => (
-                        <li
-                            key={entry.id}
-                            id={`cmd-item-${entry.id}`}
-                            className={`cmd-item${idx === activeIdx ? " is-active" : ""}`}
-                            role="option"
-                            aria-selected={idx === activeIdx}
-                            onClick={() => navigate(entry.href)}
-                            onMouseEnter={() => setActiveIdx(idx)}
-                        >
-                            <span className="cmd-item__icon" aria-hidden="true">{categoryIcon(entry.category)}</span>
-                            <span className="cmd-item__text">
-                                <span className="cmd-item__label">{entry.label}</span>
-                                {entry.sublabel && (
-                                    <span className="cmd-item__sublabel">{entry.sublabel}</span>
-                                )}
-                            </span>
-                            <span className="cmd-item__cat" aria-hidden="true">{entry.category}</span>
-                        </li>
-                    ))}
-                </ul>
-                <div className="cmd-footer" aria-hidden="true">
-                    <span><kbd>↑↓</kbd> Navigate</span>
-                    <span><kbd>↵</kbd> Open</span>
-                    <span><kbd>Esc</kbd> Close</span>
-                </div>
-            </div>
+            onKeyDown={onInputKey}
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={listId}
+            aria-activedescendant={results[active] ? `${listId}-${active}` : undefined}
+            aria-autocomplete="list"
+            aria-label="Search stories, sections and repositories"
+            placeholder="Search stories, sections, repos…"
+            className="h-14 w-full bg-transparent text-base text-ink placeholder:text-muted focus:outline-none"
+          />
+          <kbd className="label rounded border border-rule px-1.5 py-1">Esc</kbd>
         </div>
-    );
-}
 
-export type { CommandEntry };
+        <ul
+          ref={listRef}
+          id={listId}
+          role="listbox"
+          aria-label="Results"
+          className="max-h-[55vh] overflow-y-auto overscroll-contain p-2"
+          data-lenis-prevent
+        >
+          {results.length === 0 && (
+            <li role="presentation" className="px-3 py-8 text-center text-sm text-muted">
+              Nothing matches &ldquo;{query}&rdquo;.
+            </li>
+          )}
+          {results.map((entry, index) => {
+            const heading = entry.group !== lastGroup ? entry.group : null;
+            lastGroup = entry.group;
+            const selected = index === active;
+            return (
+              <li key={entry.id} role="presentation">
+                {heading && (
+                  <p className="label px-3 pb-2 pt-3" aria-hidden="true">
+                    {heading}
+                  </p>
+                )}
+                <div
+                  id={`${listId}-${index}`}
+                  role="option"
+                  aria-selected={selected}
+                  data-index={index}
+                  onMouseMove={() => setActive(index)}
+                  onClick={() => choose(entry)}
+                  className={`flex cursor-pointer items-center justify-between gap-4 rounded-lg px-3 py-2.5 ${selected ? "bg-ink text-paper" : "text-ink"
+                    }`}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{entry.label}</span>
+                    {entry.hint && (
+                      <span className={`block truncate text-xs ${selected ? "text-paper/70" : "text-muted"}`}>
+                        {entry.hint}
+                      </span>
+                    )}
+                  </span>
+                  <span aria-hidden="true" className="shrink-0 text-xs opacity-60">
+                    {/^https?:/.test(entry.href) ? "↗" : "↵"}
+                  </span>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="hidden items-center gap-4 border-t border-rule px-4 py-2.5 text-xs text-muted sm:flex">
+          <span>
+            <kbd className="font-mono">↑↓</kbd> move
+          </span>
+          <span>
+            <kbd className="font-mono">↵</kbd> open
+          </span>
+          <span className="ml-auto">
+            <kbd className="font-mono">/</kbd> or <kbd className="font-mono">Ctrl K</kbd> from anywhere
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}

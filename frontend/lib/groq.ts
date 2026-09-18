@@ -1,9 +1,33 @@
 import Groq from "groq-sdk";
 
 import { isRateLimitError, parseModelJsonValue } from "./gazette";
+import { logEvent } from "./logger";
 import type { Category } from "./types";
 
 const MODEL_NAME = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
+
+/**
+ * gpt-oss models spend part of `max_tokens` on hidden reasoning. At the
+ * default ("medium") effort a section call could run out of tokens before the
+ * JSON was complete, and editions took 80-215 s. "low" keeps the output whole
+ * and the pipeline fast. Ignored for models without reasoning support.
+ */
+const REASONING_EFFORT = process.env.GROQ_REASONING_EFFORT || "low";
+
+/** Per-call timeout. The SDK's own retries are off; completeWithGroq retries once itself. */
+const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS ?? 45_000);
+
+/**
+ * Sections stop being requested once this much time has passed since
+ * generation began, and the edition is published with the stories written so
+ * far (validation still requires at least 4). Keeps a slow provider day inside
+ * the 300 s function limit.
+ */
+const SECTIONS_BUDGET_MS = Number(process.env.GROQ_SECTIONS_BUDGET_MS ?? 170_000);
+
+function reasoningOptions(): Record<string, string> {
+  return MODEL_NAME.includes("gpt-oss") ? { reasoning_effort: REASONING_EFFORT } : {};
+}
 
 export type RawEdition = {
   headline?: unknown;
@@ -124,13 +148,15 @@ async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<
 
   let lastError: unknown;
   for (let keyIndex = 0; keyIndex < apiKeys.length; keyIndex += 1) {
-    const groq = new Groq({ apiKey: apiKeys[keyIndex] });
+    const groq = new Groq({ apiKey: apiKeys[keyIndex], timeout: GROQ_TIMEOUT_MS, maxRetries: 0 });
     for (let attempt = 0; attempt <= 1; attempt += 1) {
       try {
         const completion = await groq.chat.completions.create({
           model: MODEL_NAME,
           max_tokens: maxTokens,
           temperature: 0.4,
+          // groq-sdk 0.7 predates this parameter; the API accepts it.
+          ...(reasoningOptions() as object),
           messages: [
             { role: "system", content: buildSystemPrompt() },
             { role: "user", content: userPrompt }
@@ -141,7 +167,7 @@ async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<
         lastError = error;
         if (isRateLimitError(error)) {
           if (keyIndex < apiKeys.length - 1) {
-            console.warn(`Groq rate limit hit. Switching keys (${keyIndex + 1}/${apiKeys.length}).`);
+            logEvent("warn", "groq.rate_limited", { switchingToKey: keyIndex + 2, keys: apiKeys.length });
           }
           break;
         }
@@ -156,6 +182,7 @@ async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<
 }
 
 export async function generateGazette(date: string, searchContext: string): Promise<RawEdition> {
+  const startedAt = Date.now();
   const mainRaw = await completeWithGroq(`${searchContext}\n\n${buildMainEditionPrompt(date)}`, 2000);
   const mainEdition = parseModelJsonValue(mainRaw, "object") as Record<string, unknown>;
 
@@ -166,6 +193,14 @@ export async function generateGazette(date: string, searchContext: string): Prom
   // Sections run sequentially so each call knows which events are already
   // covered; this is what prevents the same story appearing 3-4 times.
   for (const section of STORY_SECTIONS) {
+    if (Date.now() - startedAt > SECTIONS_BUDGET_MS) {
+      logEvent("warn", "generation.sections_budget_reached", {
+        date,
+        skippedFrom: section.name,
+        storiesSoFar: stories.length
+      });
+      break;
+    }
     try {
       const raw = await completeWithGroq(
         `${searchContext}\n\n${buildSectionPrompt(section, usedHeadlines)}`,
@@ -179,12 +214,16 @@ export async function generateGazette(date: string, searchContext: string): Prom
       }
     } catch (error) {
       if (isRateLimitError(error)) {
-        console.error(`Rate limit hit at ${section.name} section, failing immediately`);
+        logEvent("error", "generation.section_rate_limited", { date, section: section.name });
         throw error;
       }
       // A failed section is skipped; validation later decides whether enough
       // stories remain to publish. No filler copy is invented.
-      console.error(`Failed to generate ${section.name} section:`, error);
+      logEvent("warn", "generation.section_failed", {
+        date,
+        section: section.name,
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 

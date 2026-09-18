@@ -54,7 +54,23 @@ export interface EditionSummary {
   title: string;
   deck: string;
   category: Category;
-  story_headlines: string[];
+}
+
+export interface ArchiveQuery {
+  /** 1-based page number. */
+  page: number;
+  pageSize: number;
+  /** Free text matched against the lead title, deck, story headlines and the date. */
+  q?: string;
+  category?: Category;
+}
+
+export interface ArchivePage {
+  items: EditionSummary[];
+  /** Editions matching q and category. */
+  total: number;
+  /** Editions per lead category, for editions matching q (ignoring the category filter). */
+  categories: Array<{ category: Category; count: number }>;
 }
 
 export interface SearchResult {

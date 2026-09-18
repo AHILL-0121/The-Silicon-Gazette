@@ -1,19 +1,16 @@
 import { Ratelimit } from "@upstash/ratelimit";
-import { Redis } from "@upstash/redis";
+
+import { sendAlert } from "./alerts";
+import { logEvent } from "./logger";
+import { getRedis } from "./redis";
 
 let limiter: Ratelimit | null = null;
 
 function getLimiter(): Ratelimit | null {
   if (limiter) return limiter;
 
-  if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN) {
-    return null;
-  }
-
-  const redis = new Redis({
-    url: process.env.UPSTASH_REDIS_REST_URL,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN
-  });
+  const redis = getRedis();
+  if (!redis) return null;
 
   limiter = new Ratelimit({
     redis,
@@ -24,29 +21,44 @@ function getLimiter(): Ratelimit | null {
   return limiter;
 }
 
-export async function checkGenerateRateLimit(identifier: string): Promise<{
+export interface RateLimitResult {
   success: boolean;
   remaining: number;
   reset: number;
-}> {
+  /** True when the limiter itself was unavailable and the request was refused for safety. */
+  unavailable?: boolean;
+}
+
+/**
+ * Rate limit for anonymous generation requests.
+ *
+ * Without Upstash configured (local development) every request is allowed.
+ * When Upstash is configured but the check errors, production fails closed:
+ * an outage of the limiter must not turn the paid pipeline into an open
+ * endpoint. Development keeps failing open so a flaky network doesn't block work.
+ */
+export async function checkGenerateRateLimit(identifier: string): Promise<RateLimitResult> {
   const activeLimiter = getLimiter();
   if (!activeLimiter) {
-    return {
-      success: true,
-      remaining: 3,
-      reset: Date.now() + 86400000
-    };
+    return { success: true, remaining: 3, reset: Date.now() + 86400000 };
   }
 
   try {
     return await activeLimiter.limit(identifier);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[rate-limit] Upstash check failed, allowing request: ${message}`);
+    const failClosed = process.env.NODE_ENV === "production";
+    logEvent("warn", "ratelimit.unavailable", { action: failClosed ? "refused" : "allowed", error: message });
+    if (failClosed) {
+      await sendAlert("ratelimit-unavailable", "Rate limiter (Upstash) is unreachable; anonymous generation requests are being refused.", {
+        error: message
+      });
+    }
     return {
-      success: true,
-      remaining: 3,
-      reset: Date.now() + 86400000
+      success: !failClosed,
+      remaining: 0,
+      reset: Date.now() + 60_000,
+      unavailable: failClosed
     };
   }
 }

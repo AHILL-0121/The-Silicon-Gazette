@@ -1,12 +1,16 @@
-import { dedupeStories, safeHttpUrl } from "./gazette";
-import { buildStorySlugs } from "./slugs";
+import { dedupeStories, isSameStory, safeHttpUrl } from "./gazette";
+import { buildStorySlugs, legacySlug } from "./slugs";
 import type { Category, GazetteEdition, Headline, Repo, Story } from "./types";
 
 export interface StoryView extends Story {
   slug: string;
   href: string;
   paragraphs: string[];
+  /** Short plain-text teaser for cards and lists. */
+  excerpt: string;
   readMinutes: number;
+  /** Publication name with any pasted URLs removed. */
+  sourceLabel: string;
   sourceUrl?: string;
   /** Section page this story is printed on. */
   sectionId: string;
@@ -27,7 +31,7 @@ export interface SectionView {
 }
 
 export interface EditionView {
-  lead: Headline & { paragraphs: string[]; sourceUrl?: string; readMinutes: number };
+  lead: Headline & { paragraphs: string[]; sourceUrl?: string; sourceLabel: string; readMinutes: number };
   stories: StoryView[];
   repos: RepoView[];
   sections: SectionView[];
@@ -55,6 +59,35 @@ export function splitParagraphs(text: string): string[] {
 export function readMinutes(text: string): number {
   const words = text.trim().split(/\s+/).filter(Boolean).length;
   return Math.max(1, Math.round(words / WORDS_PER_MINUTE));
+}
+
+/** Trims text to about `max` characters at a word boundary. */
+export function excerpt(text: string, max = 180): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  const cut = flat.slice(0, max);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${cut.slice(0, lastSpace > max * 0.6 ? lastSpace : max).replace(/[,;:.\s]+$/, "")}…`;
+}
+
+/**
+ * Models often paste the result URL into the source field
+ * ("Reuters Technology (https://www.reuters.com/technology)"). Readers get the
+ * publication name; a bare URL becomes its host name.
+ */
+export function cleanSourceLabel(source: string): string {
+  const withoutUrls = source
+    .replace(/\(\s*https?:\/\/[^)]*\)/gi, "")
+    .replace(/\s+[-–—|]\s+https?:\/\/\S+/gi, "")
+    .trim();
+  if (/^https?:\/\//i.test(withoutUrls)) {
+    try {
+      return new URL(withoutUrls).hostname.replace(/^www\./, "");
+    } catch {
+      return "Newswire";
+    }
+  }
+  return withoutUrls || "Newswire";
 }
 
 function toRepoView(repo: Repo): RepoView {
@@ -93,7 +126,9 @@ export function buildEditionView(content: GazetteEdition, date: string): Edition
       slug,
       href: `/gazette/${date}/story/${slug}`,
       paragraphs,
+      excerpt: excerpt(paragraphs[0] ?? story.summary),
       readMinutes: readMinutes(story.summary),
+      sourceLabel: cleanSourceLabel(story.source),
       sourceUrl: safeHttpUrl(story.url),
       sectionId: sectionFor(story.category)
     };
@@ -110,6 +145,7 @@ export function buildEditionView(content: GazetteEdition, date: string): Edition
       ...lead,
       paragraphs: splitParagraphs(lead.body),
       sourceUrl: safeHttpUrl(lead.url),
+      sourceLabel: cleanSourceLabel(lead.source),
       readMinutes: readMinutes(lead.body)
     },
     stories,
@@ -122,8 +158,46 @@ export function buildEditionView(content: GazetteEdition, date: string): Edition
   };
 }
 
-export function findStoryInView(view: EditionView, slug: string): StoryView | undefined {
-  return view.stories.find((story) => story.slug === slug);
+/**
+ * Finds the story a URL slug points at. Besides current slugs this accepts
+ * slugs from the previous algorithm and slugs of duplicate stories that the
+ * view merged away, returning the story that is now shown for them so the
+ * page can redirect to its canonical URL instead of a 404.
+ */
+export function resolveStory(
+  view: EditionView,
+  content: GazetteEdition,
+  slug: string
+): { story: StoryView; canonical: boolean } | null {
+  const direct = view.stories.find((story) => story.slug === slug);
+  if (direct) return { story: direct, canonical: true };
+
+  const slugs = buildStorySlugs(content.stories.map((story) => story.headline));
+  const index = content.stories.findIndex(
+    (story, i) => slugs[i] === slug || legacySlug(story.headline) === slug
+  );
+  if (index === -1) return null;
+
+  const raw = content.stories[index];
+  const kept =
+    view.stories.find((story) => story.slug === slugs[index]) ??
+    view.stories.find((story) => isSameStory(story, raw));
+  return kept ? { story: kept, canonical: false } : null;
+}
+
+/**
+ * Slugs of the story pages an edition shows: the same slug and duplicate
+ * rules as buildEditionView, without building the whole view.
+ */
+export function visibleStorySlugs(
+  stories: Array<{ headline: string; summary: string }>,
+  lead: { headline: string; summary: string }
+): string[] {
+  const slugs = buildStorySlugs(stories.map((story) => story.headline));
+  return dedupeStories(
+    stories.map((story, index) => ({ ...story, slug: slugs[index] })),
+    lead
+  ).map((story) => story.slug);
 }
 
 export const CATEGORY_LABELS: Record<Category, string> = {

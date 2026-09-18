@@ -1,9 +1,15 @@
 import { timingSafeEqual } from "node:crypto";
 
+import { revalidateTag } from "next/cache";
 import { NextResponse } from "next/server";
 
 import { compareEditionDate, isValidEditionDate, toEditionDate } from "@/lib/date";
-import { GenerationFailedError, getEditionForDate } from "@/lib/edition-service";
+import {
+  EDITIONS_TAG,
+  GenerationFailedError,
+  editionTag,
+  getEditionForDate
+} from "@/lib/edition-service";
 import { logServerError } from "@/lib/logger";
 import { checkGenerateRateLimit } from "@/lib/rate-limit";
 
@@ -50,6 +56,13 @@ async function runGeneration(date: string, trusted: boolean) {
       return NextResponse.json({ error: "Edition generation returned no data." }, { status: 503 });
     }
 
+    if (!result.cached) {
+      // New edition: refresh cached archive listings, adjacent-date links and
+      // any cached "no edition" read for a backfilled past date.
+      revalidateTag(EDITIONS_TAG);
+      revalidateTag(editionTag(date));
+    }
+
     return NextResponse.json({
       edition: result.edition,
       cached: result.cached,
@@ -66,6 +79,12 @@ async function runGeneration(date: string, trusted: boolean) {
 async function rateLimitResponse(req: Request) {
   const rate = await checkGenerateRateLimit(getIpIdentifier(req));
   if (rate.success) return null;
+  if (rate.unavailable) {
+    return NextResponse.json(
+      { error: "Generation is temporarily unavailable. Try again later." },
+      { status: 503, headers: { "Retry-After": "60" } }
+    );
+  }
   return NextResponse.json(
     { error: "Rate limit exceeded. Try again later." },
     {

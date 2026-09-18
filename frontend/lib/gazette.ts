@@ -12,7 +12,9 @@ export const CategoryEnum = z.enum([
 // The SRS asks for at least 4 secondary stories; up to 12 are generated.
 export const MIN_STORIES = 4;
 export const MAX_STORIES = 12;
+// Five repos are requested; an edition with a few unusable ones is still published.
 export const REPO_COUNT = 5;
+export const MIN_REPOS = 3;
 
 const httpUrl = z
   .string()
@@ -44,7 +46,7 @@ export const GazetteEditionSchema = z.object({
     url: httpUrl.optional()
   }),
   stories: z.array(StorySchema).min(MIN_STORIES).max(MAX_STORIES),
-  repos: z.array(RepoSchema).length(REPO_COUNT),
+  repos: z.array(RepoSchema).min(MIN_REPOS).max(REPO_COUNT),
   market_brief: z.string().min(10).max(300)
 });
 
@@ -53,12 +55,10 @@ export type GazetteEdition = z.infer<typeof GazetteEditionSchema>;
 const VALID_CATEGORIES = new Set<string>(CategoryEnum.options);
 
 function textValue(value: unknown, fallback = ""): string {
-  if (typeof value === "string") {
-    return value.trim();
-  }
   if (value === null || value === undefined) {
     return fallback;
   }
+  // Models sometimes return "" for fields they couldn't fill: use the fallback.
   return String(value).trim() || fallback;
 }
 

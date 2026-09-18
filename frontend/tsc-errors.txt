@@ -1,0 +1,4 @@
+﻿.next/types/app/gazette/[date]/page.ts(2,24): error TS2307: Cannot find module '../../../../../app/gazette/[date]/page.js' or its corresponding type declarations.
+.next/types/app/gazette/[date]/page.ts(5,29): error TS2307: Cannot find module '../../../../../app/gazette/[date]/page.js' or its corresponding type declarations.
+app/api/analytics/session/heartbeat/route.ts(20,30): error TS2339: Property 'hash' does not exist on type 'SessionCheckResult'.
+  Property 'hash' does not exist on type 'NextResponse<unknown>'.

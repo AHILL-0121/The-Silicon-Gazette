@@ -1,106 +1,63 @@
-"use client";
-
-import { useEffect, useRef } from "react";
-import gsap from "gsap";
-import { ScrollTrigger } from "gsap/ScrollTrigger";
-import Link from "next/link";
-
-gsap.registerPlugin(ScrollTrigger);
+import type { CSSProperties } from "react";
 
 interface MastheadProps {
-  date: string;
+  id?: string;
   issueNumber: number;
+  displayDate: string;
+  storyCount: number;
+  readMinutes: number;
 }
 
-export function Masthead({ date, issueNumber }: MastheadProps) {
-  const titleRef = useRef<HTMLHeadingElement>(null);
-  const rulesRef = useRef<HTMLDivElement>(null);
+const WORDS: Array<{ text: string; accent?: boolean }> = [
+  { text: "The" },
+  { text: "Silicon", accent: true },
+  { text: "Gazette" }
+];
 
-  useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-
-    const titleEl = titleRef.current;
-    const rulesEl = rulesRef.current;
-    if (!titleEl) return;
-
-    // Split title into individual letters and animate them rising in
-    const text = titleEl.textContent ?? "";
-    titleEl.textContent = "";
-    titleEl.style.overflow = "hidden";
-
-    const words = text.split(" ");
-    words.forEach((word, wi) => {
-      const wordSpan = document.createElement("span");
-      wordSpan.style.display = "inline-block";
-      wordSpan.style.overflow = "hidden";
-
-      [...word].forEach((char) => {
-        const charSpan = document.createElement("span");
-        charSpan.textContent = char;
-        charSpan.style.display = "inline-block";
-        charSpan.style.transform = "translateY(110%)";
-        charSpan.style.opacity = "0";
-        wordSpan.appendChild(charSpan);
-      });
-
-      titleEl.appendChild(wordSpan);
-      if (wi < words.length - 1) {
-        const space = document.createTextNode(" ");
-        titleEl.appendChild(space);
-      }
-    });
-
-    const chars = titleEl.querySelectorAll("span > span");
-    gsap.to(chars, {
-      translateY: "0%",
-      opacity: 1,
-      duration: 0.7,
-      stagger: 0.05,
-      ease: "power3.out",
-      delay: 0.15,
-    });
-
-    // Draw the rules in from left
-    if (rulesEl) {
-      const rule1 = rulesEl.querySelector(".rule-heavy");
-      const rule2 = rulesEl.querySelector(".rule-light");
-      gsap.fromTo(
-        [rule1, rule2],
-        { scaleX: 0, transformOrigin: "left" },
-        { scaleX: 1, duration: 0.9, stagger: 0.1, ease: "power2.inOut", delay: 0.4 }
-      );
-    }
-  }, []);
-
+/** The broadsheet nameplate. Letters rise in one by one and the rules draw across. */
+export function Masthead({ id = "masthead", issueNumber, displayDate, storyCount, readMinutes }: MastheadProps) {
+  let letterIndex = 0;
   return (
-    <header className="masthead" role="banner">
-      <div className="masthead-top">
-        <span className="est-line">Est. 2026 — {new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}</span>
-        <nav className="masthead-nav" aria-label="Site navigation">
-          <Link href="/archive">Archive</Link>
-        </nav>
+    <section id={id} aria-labelledby={`${id}-title`} data-parallax-root className="page-x pt-6 sm:pt-10">
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 pb-3">
+        <p className="label">Vol. I · No. {issueNumber}</p>
+        <p className="label order-last w-full text-center sm:order-none sm:w-auto">{displayDate}</p>
+        <p className="label">
+          {storyCount} stories · {readMinutes} min read
+        </p>
       </div>
+      <div className="draw-rule h-px bg-ink" />
 
-      <div className="masthead-title-wrap">
-        <Link href="/" className="title-link" style={{ textDecoration: 'none', display: 'inline-block' }}>
-          <h1 className="title" ref={titleRef} aria-label="The Silicon Gazette">
-            The Silicon Gazette
-          </h1>
-        </Link>
-      </div>
+      <h1
+        id={`${id}-title`}
+        aria-label="The Silicon Gazette"
+        data-anim="parallax"
+        data-speed="0.45"
+        data-fade="0.2"
+        className="py-3 text-center font-display leading-[0.86] tracking-[-0.02em] text-[clamp(3.1rem,13.2vw,11.5rem)] sm:py-5"
+      >
+        {WORDS.map((word, wordIndex) => (
+          <span key={word.text} aria-hidden="true" className={word.accent ? "italic text-signal" : undefined}>
+            <span className="rise">
+              {word.text.split("").map((letter) => (
+                <span key={letterIndex} style={{ "--i": letterIndex++ } as CSSProperties}>
+                  {letter}
+                </span>
+              ))}
+            </span>
+            {wordIndex < WORDS.length - 1 ? " " : ""}
+          </span>
+        ))}
+      </h1>
 
-      <div ref={rulesRef}>
-        <div className="rule-heavy" />
-        <p className="tagline">All the code that&apos;s fit to print</p>
-        <div className="rule-light" />
+      <div className="draw-rule rule-double" style={{ "--base": "250ms" } as CSSProperties} />
+      <div className="flex flex-col items-center justify-between gap-2 py-3 sm:flex-row">
+        <p className="font-serif text-lg italic text-ink-soft">All the code that&apos;s fit to print.</p>
+        <p className="label flex items-center gap-2">
+          <span className="inline-block h-1.5 w-1.5 animate-blink rounded-full bg-signal" aria-hidden="true" />
+          Set by machines · Checked against the wire
+        </p>
       </div>
-
-      <div className="meta-bar">
-        <span className="meta-item">Issue No. {issueNumber}</span>
-        <span className="meta-item">Vol. I</span>
-        <span className="meta-item">Daily Edition</span>
-        <span className="meta-item">{date}</span>
-      </div>
-    </header>
+    </section>
   );
 }

@@ -2,28 +2,34 @@
 
 import { useEffect, useRef } from "react";
 
-/** Ink-red reading progress bar fixed to the top of the viewport */
+/** Thin signal-red bar showing how far through the page the reader is. */
 export function ReadingProgress() {
-    const barRef = useRef<HTMLDivElement>(null);
+  const bar = useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
-        function update() {
-            const scrollTop = window.scrollY;
-            const docHeight = document.documentElement.scrollHeight - window.innerHeight;
-            const pct = docHeight > 0 ? Math.min(100, (scrollTop / docHeight) * 100) : 0;
-            if (barRef.current) {
-                barRef.current.style.transform = `scaleX(${pct / 100})`;
-            }
-        }
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      const progress = max > 0 ? Math.min(1, window.scrollY / max) : 0;
+      if (bar.current) bar.current.style.transform = `scaleX(${progress})`;
+    };
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, []);
 
-        window.addEventListener("scroll", update, { passive: true });
-        update();
-        return () => window.removeEventListener("scroll", update);
-    }, []);
-
-    return (
-        <div className="reading-progress-track" aria-hidden="true">
-            <div className="reading-progress-bar" ref={barRef} />
-        </div>
-    );
+  return (
+    <div aria-hidden="true" className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden">
+      <div ref={bar} className="h-full origin-left scale-x-0 bg-signal" />
+    </div>
+  );
 }

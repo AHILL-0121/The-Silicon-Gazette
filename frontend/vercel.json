@@ -3,6 +3,10 @@
     {
       "path": "/api/gazette/generate",
       "schedule": "30 0 * * *"
+    },
+    {
+      "path": "/api/analytics/rollup",
+      "schedule": "0 2 * * *"
     }
   ]
 }

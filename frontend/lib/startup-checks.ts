@@ -1,5 +1,7 @@
+import { sendAlert } from "./alerts";
 import { checkDatabaseHealth } from "./db";
 import { GEMINI_MODEL } from "./gemini";
+import { logEvent } from "./logger";
 
 type ApiHealth = {
   configured: boolean;
@@ -133,13 +135,7 @@ async function checkGeminiHealth(): Promise<ApiHealth> {
 }
 
 function logStatus(label: string, healthy: boolean, detail: string): void {
-  const prefix = healthy ? "[startup] OK" : "[startup] WARN";
-  const line = `${prefix} ${label}: ${detail}`;
-  if (healthy) {
-    console.log(line);
-    return;
-  }
-  console.warn(line);
+  logEvent(healthy ? "info" : "warn", "startup.check", { service: label, healthy, detail });
 }
 
 export async function runStartupChecks(): Promise<void> {
@@ -160,4 +156,14 @@ export async function runStartupChecks(): Promise<void> {
   logStatus("Groq", groq.configured && groq.reachable, groq.detail);
   logStatus("Tavily", tavily.configured && tavily.reachable, tavily.detail);
   logStatus("Gemini", gemini.configured && gemini.reachable, gemini.detail);
+
+  // Only required services alert; Gemini is an optional fallback.
+  const down = [
+    !dbHealthy && `Database: ${db.detail}`,
+    !(groq.configured && groq.reachable) && `Groq: ${groq.detail}`,
+    !(tavily.configured && tavily.reachable) && `Tavily: ${tavily.detail}`
+  ].filter(Boolean);
+  if (down.length > 0) {
+    await sendAlert("startup-degraded", "A required service failed its startup check.", { services: down });
+  }
 }

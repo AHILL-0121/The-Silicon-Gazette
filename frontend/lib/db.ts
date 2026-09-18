@@ -1,9 +1,10 @@
-import { neon } from "@neondatabase/serverless";
-import { asc, desc, eq, gt, lt, sql } from "drizzle-orm";
+import { neon, neonConfig } from "@neondatabase/serverless";
+import { and, asc, count, desc, eq, gt, lt, sql, type SQL } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/neon-http";
 
+import { logEvent } from "./logger";
 import { editions } from "./schema";
-import type { Category, EditionRecord, EditionSummary, GazetteEdition } from "./types";
+import type { ArchivePage, ArchiveQuery, Category, EditionRecord, EditionSummary, GazetteEdition } from "./types";
 
 interface SaveEditionInput {
   date: string;
@@ -49,24 +50,43 @@ function warnMemoryFallback(error: unknown): void {
   }
 
   memoryStoreHolder.__siliconGazetteDbFallbackWarned = true;
-  const message = error instanceof Error ? error.message : String(error);
-  console.warn(
-    `[db] Falling back to in-memory store because the editions table is unavailable: ${message}`
-  );
-  console.warn("[db] Run `npx drizzle-kit push` to create the schema in your Neon database.");
+  logEvent("warn", "db.memory_fallback", {
+    error: error instanceof Error ? error.message : String(error),
+    fix: "Run `npx drizzle-kit push` to create the schema in your Neon database."
+  });
 }
+
+/**
+ * Every Neon HTTP query gets its own timeout, so a stalled connection fails
+ * fast (and reaches the error page) instead of hanging until the function's
+ * limit. Callers' own abort signals still apply.
+ */
+const DB_TIMEOUT_MS = Number(process.env.DB_TIMEOUT_MS ?? 10_000);
+neonConfig.fetchFunction = (input: RequestInfo | URL, init: RequestInit = {}) => {
+  const timeout = AbortSignal.timeout(DB_TIMEOUT_MS);
+  return fetch(input, { ...init, signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
+};
 
 function getDb() {
   if (!process.env.DATABASE_URL) {
     return null;
   }
-  const client = neon(process.env.DATABASE_URL, {
-    fetchOptions: {
-      cache: "no-store"
-    }
-  });
+  // No explicit fetch cache option on purpose. In Next 15 such fetches are
+  // never cached at runtime ("auto no cache") and, unlike `cache: "no-store"`,
+  // don't abort ISR rendering of pages that read the database. Pages cache
+  // past editions explicitly with unstable_cache (see edition-service.ts).
+  const client = neon(process.env.DATABASE_URL);
   return drizzle(client);
 }
+
+/**
+ * Named db instance for analytics and other server-only callers.
+ * Throws if DATABASE_URL is not set — analytics routes handle the error.
+ */
+export const db = (() => {
+  const client = neon(process.env.DATABASE_URL ?? "");
+  return drizzle(client);
+})();
 
 async function withMemoryFallback<T>(query: () => Promise<T>, fromMemory: () => T): Promise<T> {
   try {
@@ -108,8 +128,7 @@ function toSummary(record: EditionRecord): EditionSummary {
     generated_at: record.generated_at,
     title: record.content.headline.title,
     deck: record.content.headline.deck,
-    category: record.content.headline.category,
-    story_headlines: record.content.stories.map((story) => story.headline)
+    category: record.content.headline.category
   };
 }
 
@@ -182,10 +201,134 @@ export async function saveEdition(input: SaveEditionInput): Promise<EditionRecor
   }, saveToMemory);
 }
 
-/** Lightweight listing for the archive: never loads full story bodies. */
-export async function listEditionSummaries(): Promise<EditionSummary[]> {
+const leadTitle = sql<string>`${editions.content}->'headline'->>'title'`;
+const leadDeck = sql<string>`${editions.content}->'headline'->>'deck'`;
+const leadCategory = sql<string>`${editions.content}->'headline'->>'category'`;
+
+/** Escapes LIKE wildcards so a search for "50%" matches literally. */
+function likePattern(text: string): string {
+  return `%${text.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+}
+
+function searchCondition(q: string | undefined): SQL | undefined {
+  const text = q?.trim();
+  if (!text) return undefined;
+  const pattern = likePattern(text);
+  return sql`(
+    ${leadTitle} ILIKE ${pattern}
+    OR ${leadDeck} ILIKE ${pattern}
+    OR jsonb_path_query_array(${editions.content}, '$.stories[*].headline')::text ILIKE ${pattern}
+    OR ${editions.date}::text LIKE ${pattern}
+  )`;
+}
+
+/**
+ * One page of the archive, newest first, with search and a lead-category
+ * filter applied in the database. Only lead title, deck and category are
+ * returned (never story bodies), plus totals for pagination and filter chips.
+ */
+export async function listEditionSummariesPage(query: ArchiveQuery): Promise<ArchivePage> {
+  const offset = (query.page - 1) * query.pageSize;
+
+  const fromMemory = (): ArchivePage => {
+    const text = query.q?.trim().toLowerCase();
+    const matching = memoryRecords().filter((record) => {
+      if (!text) return true;
+      const haystack = [
+        record.content.headline.title,
+        record.content.headline.deck,
+        record.date,
+        ...record.content.stories.map((story) => story.headline)
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(text);
+    });
+    const counts = new Map<Category, number>();
+    for (const record of matching) {
+      const category = record.content.headline.category;
+      counts.set(category, (counts.get(category) ?? 0) + 1);
+    }
+    const filtered = query.category
+      ? matching.filter((record) => record.content.headline.category === query.category)
+      : matching;
+    return {
+      items: filtered.slice(offset, offset + query.pageSize).map(toSummary),
+      total: filtered.length,
+      categories: [...counts.entries()].map(([category, value]) => ({ category, count: value }))
+    };
+  };
+
   const db = getDb();
-  const fromMemory = () => memoryRecords().map(toSummary);
+  if (!db) {
+    return fromMemory();
+  }
+
+  return withMemoryFallback(async () => {
+    const search = searchCondition(query.q);
+    const where = and(search, query.category ? sql`${leadCategory} = ${query.category}` : undefined);
+
+    const [rows, [totalRow], categoryRows] = await Promise.all([
+      db
+        .select({
+          date: editions.date,
+          issueNum: editions.issueNum,
+          generatedAt: editions.generatedAt,
+          title: leadTitle,
+          deck: leadDeck,
+          category: leadCategory
+        })
+        .from(editions)
+        .where(where)
+        .orderBy(desc(editions.date))
+        .limit(query.pageSize)
+        .offset(offset),
+      db.select({ total: count() }).from(editions).where(where),
+      db
+        .select({ category: leadCategory, total: count() })
+        .from(editions)
+        .where(search)
+        .groupBy(leadCategory)
+    ]);
+
+    return {
+      items: rows.map((row) => ({
+        date: row.date,
+        issue_num: row.issueNum,
+        generated_at: typeof row.generatedAt === "string" ? row.generatedAt : row.generatedAt.toISOString(),
+        title: row.title ?? "",
+        deck: row.deck ?? "",
+        category: (row.category ?? "TECH") as Category
+      })),
+      total: Number(totalRow?.total ?? 0),
+      categories: categoryRows
+        .filter((row) => row.category)
+        .map((row) => ({ category: row.category as Category, count: Number(row.total) }))
+    };
+  }, fromMemory);
+}
+
+export interface EditionStoryIndex {
+  date: string;
+  generated_at: string;
+  lead: { headline: string; summary: string };
+  stories: Array<{ headline: string; summary: string }>;
+}
+
+/**
+ * Headlines and summaries of every edition, for the sitemap. Duplicate
+ * detection needs summaries to decide which story pages exist; repos, sources
+ * and other fields are left out. Callers should cache the result.
+ */
+export async function listEditionStoryIndex(): Promise<EditionStoryIndex[]> {
+  const db = getDb();
+  const fromMemory = () =>
+    memoryRecords().map((record) => ({
+      date: record.date,
+      generated_at: record.generated_at,
+      lead: { headline: record.content.headline.title, summary: record.content.headline.body },
+      stories: record.content.stories.map(({ headline, summary }) => ({ headline, summary }))
+    }));
   if (!db) {
     return fromMemory();
   }
@@ -194,24 +337,22 @@ export async function listEditionSummaries(): Promise<EditionSummary[]> {
     const rows = await db
       .select({
         date: editions.date,
-        issueNum: editions.issueNum,
         generatedAt: editions.generatedAt,
-        title: sql<string>`${editions.content}->'headline'->>'title'`,
-        deck: sql<string>`${editions.content}->'headline'->>'deck'`,
-        category: sql<string>`${editions.content}->'headline'->>'category'`,
-        storyHeadlines: sql<string[] | null>`jsonb_path_query_array(${editions.content}, '$.stories[*].headline')`
+        leadHeadline: sql<string>`${editions.content}->'headline'->>'title'`,
+        leadSummary: sql<string>`${editions.content}->'headline'->>'body'`,
+        stories: sql<Array<{ headline: string; summary: string }> | null>`(
+          select jsonb_agg(jsonb_build_object('headline', s->>'headline', 'summary', s->>'summary'))
+          from jsonb_array_elements(${editions.content}->'stories') s
+        )`
       })
       .from(editions)
       .orderBy(desc(editions.date));
 
     return rows.map((row) => ({
       date: row.date,
-      issue_num: row.issueNum,
       generated_at: typeof row.generatedAt === "string" ? row.generatedAt : row.generatedAt.toISOString(),
-      title: row.title ?? "",
-      deck: row.deck ?? "",
-      category: (row.category ?? "TECH") as Category,
-      story_headlines: Array.isArray(row.storyHeadlines) ? row.storyHeadlines : []
+      lead: { headline: row.leadHeadline ?? "", summary: row.leadSummary ?? "" },
+      stories: Array.isArray(row.stories) ? row.stories : []
     }));
   }, fromMemory);
 }

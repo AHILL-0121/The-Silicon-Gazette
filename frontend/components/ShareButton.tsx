@@ -1,58 +1,58 @@
 "use client";
 
-import { useState } from "react";
+import { track } from "@/lib/analytics/client";
+import { toast } from "./Toaster";
 
-export function ShareButton() {
-  const [status, setStatus] = useState<"idle" | "copied" | "error">("idle");
+interface ShareButtonProps {
+  title: string;
+  text?: string;
+  /** Defaults to the current page URL without its hash. */
+  url?: string;
+  className?: string;
+  label?: string;
+}
 
-  async function handleShare() {
-    const url = window.location.href;
-    const title = document.title;
+/**
+ * Opens the native share sheet where there is one (mostly mobile), otherwise
+ * copies the link. Either way the reader gets visible feedback, including
+ * when both fail.
+ */
+export function ShareButton({ title, text, url, className = "btn", label = "Share" }: ShareButtonProps) {
+  async function share() {
+    const shareUrl = url ? new URL(url, window.location.origin).toString() : window.location.href.split("#")[0];
 
-    // Use native share sheet on supported mobile browsers
     if (typeof navigator.share === "function") {
       try {
-        await navigator.share({ title, url });
+        await navigator.share({ title, text, url: shareUrl });
+        track("share", { method: "native" });
         return;
-      } catch {
-        // User cancelled or not supported — fall through to clipboard
+      } catch (error) {
+        // The reader closed the sheet: nothing to report.
+        if (error instanceof DOMException && error.name === "AbortError") return;
       }
     }
 
-    // Clipboard fallback
     try {
-      await navigator.clipboard.writeText(url);
-      setStatus("copied");
-      window.setTimeout(() => setStatus("idle"), 2500);
+      await navigator.clipboard.writeText(shareUrl);
+      track("share", { method: "clipboard" });
+      toast("Link copied to clipboard");
     } catch {
-      // Clipboard failed — show the URL so users can copy manually
-      setStatus("error");
-      window.setTimeout(() => setStatus("idle"), 4000);
+      toast("Couldn't copy automatically. Copy the link from the address bar.");
     }
   }
 
   return (
-    <div className="share-row">
-      <button
-        id="share-edition-btn"
-        className="refresh-btn"
-        onClick={handleShare}
-        type="button"
-        aria-live="polite"
-      >
-        Share This Edition
-      </button>
-
-      {status === "copied" && (
-        <span className="share-toast share-toast--ok" role="status" aria-live="polite">
-          ✓ Link copied to clipboard
-        </span>
-      )}
-      {status === "error" && (
-        <span className="share-toast share-toast--err" role="alert" aria-live="assertive">
-          Could not copy — please copy the URL from the address bar.
-        </span>
-      )}
-    </div>
+    <button type="button" onClick={share} className={className}>
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path
+          d="M8 10V2m0 0L5 5m3-3 3 3M3 8.5V13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V8.5"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+      {label}
+    </button>
   );
 }

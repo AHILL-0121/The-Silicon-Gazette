@@ -39,7 +39,3 @@ export function formatDisplayDate(date: string): string {
     timeZone: "UTC"
   });
 }
-
-export function isPastDate(date: string, reference = toEditionDate()): boolean {
-  return compareEditionDate(date, reference) < 0;
-}

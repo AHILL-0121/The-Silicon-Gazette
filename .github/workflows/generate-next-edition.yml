@@ -8,6 +8,9 @@ on:
 jobs:
   generate:
     runs-on: ubuntu-latest
+    env:
+      # Set a repository variable SITE_URL when a custom domain is connected.
+      SITE_URL: ${{ vars.SITE_URL || 'https://the-silicon-gazette.vercel.app' }}
     steps:
       - name: Compute today's edition date (UTC)
         id: edition_date
@@ -19,7 +22,12 @@ jobs:
         run: |
           DATE="${{ steps.edition_date.outputs.date }}"
           curl --fail --show-error --retry 3 --retry-delay 30 --max-time 320 \
-            -X POST "https://the-silicon-gazette.vercel.app/api/gazette/generate" \
+            -X POST "${SITE_URL}/api/gazette/generate" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${CRON_SECRET}" \
             -d "{\"date\":\"$DATE\"}"
+      # Fails the run (and GitHub emails the repo owner) if the site is down or
+      # today's edition still isn't live.
+      - name: Verify the edition is live
+        run: |
+          curl --fail --show-error --retry 3 --retry-delay 20 --max-time 30 "${SITE_URL}/api/health"

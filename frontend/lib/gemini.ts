@@ -1,4 +1,5 @@
 import { parseModelJsonValue } from "./gazette";
+import { logEvent } from "./logger";
 import { STORY_SECTIONS, buildMainEditionPrompt, buildSystemPrompt, type RawEdition } from "./groq";
 
 export const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
@@ -7,7 +8,21 @@ export function isGeminiConfigured(): boolean {
   return Boolean(process.env.GEMINI_API_KEY);
 }
 
+/** Gemini returns 429/5xx under load ("model is experiencing high demand"). */
+const TRANSIENT_STATUS = /Gemini API error: (429|5\d\d)/;
+
 async function generateGeminiResponse(prompt: string, maxTokens: number): Promise<string> {
+  try {
+    return await requestGemini(prompt, maxTokens);
+  } catch (error) {
+    if (!(error instanceof Error) || !TRANSIENT_STATUS.test(error.message)) throw error;
+    logEvent("warn", "gemini.retry", { reason: error.message.slice(0, 120), delayMs: 5000 });
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    return requestGemini(prompt, maxTokens);
+  }
+}
+
+async function requestGemini(prompt: string, maxTokens: number): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error("GEMINI_API_KEY is not configured");
@@ -54,7 +69,7 @@ async function generateGeminiResponse(prompt: string, maxTokens: number): Promis
 }
 
 export async function generateGazetteViaGemini(date: string, searchContext: string): Promise<RawEdition> {
-  console.log("Switching to Gemini API as fallback...");
+  logEvent("warn", "generation.fallback_gemini", { date, model: GEMINI_MODEL });
 
   const mainRaw = await generateGeminiResponse(`${searchContext}\n\n${buildMainEditionPrompt(date)}`, 4096);
   const mainEdition = parseModelJsonValue(mainRaw, "object") as Record<string, unknown>;

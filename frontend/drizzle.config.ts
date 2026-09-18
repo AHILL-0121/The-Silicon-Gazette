@@ -13,7 +13,7 @@ loadEnv();
 const databaseUrl = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL || "";
 
 export default defineConfig({
-  schema: "./lib/schema.ts",
+  schema: ["./lib/schema.ts", "./lib/analytics/schema.ts"],
   out: "./drizzle",
   dialect: "postgresql",
   dbCredentials: {
