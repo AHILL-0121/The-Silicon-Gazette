@@ -48,7 +48,7 @@ export const events = pgTable(
 // Daily rollups — rebuilt idempotently by the nightly job
 // ---------------------------------------------------------------------------
 
-/** One row per (day, path). */
+/** One row per (day, path). Views/visitors/sessions count pageviews only. */
 export const dailyPageStats = pgTable(
     "daily_page_stats",
     {
@@ -59,7 +59,9 @@ export const dailyPageStats = pgTable(
         storySlug: text("story_slug"),
         views: integer("views").notNull().default(0),
         visitors: integer("visitors").notNull().default(0),
-        sessions: integer("sessions").notNull().default(0)
+        sessions: integer("sessions").notNull().default(0),
+        completions: integer("completions").notNull().default(0),
+        shares: integer("shares").notNull().default(0)
     },
     (table) => ({
         pk: primaryKey({ columns: [table.day, table.path] })
@@ -80,6 +82,24 @@ export const dailyEventStats = pgTable(
         pk: primaryKey({ columns: [table.day, table.name, table.key] })
     })
 );
+
+/**
+ * One row per rolled-up day, written even when the day had no traffic. Its
+ * presence marks the day as rolled up, so queries know to read rollups for it.
+ * Session counts are distinct per UTC day (a session crossing midnight counts
+ * on both days), which is exactly what the raw-event queries compute too.
+ */
+export const dailySessionStats = pgTable("daily_session_stats", {
+    day: date("day").primaryKey(),
+    views: integer("views").notNull().default(0),
+    visitors: integer("visitors").notNull().default(0),
+    sessions: integer("sessions").notNull().default(0),
+    storySessions: integer("story_sessions").notNull().default(0),
+    completeSessions: integer("complete_sessions").notNull().default(0),
+    openSessions: integer("open_sessions").notNull().default(0),
+    deepSessions: integer("deep_sessions").notNull().default(0),
+    shareSessions: integer("share_sessions").notNull().default(0)
+});
 
 /** One row per (day, dimension, value). */
 export const dailyDimStats = pgTable(

@@ -11,8 +11,13 @@ app/
   archive/                   Searchable archive
   latest/                    Redirect to the newest printed edition
   api/gazette/               Read and generate endpoints
+  analytics/                 Private dashboard (client shell; noindex, rendered per request for the CSP nonce)
+  api/track/                 Analytics ingestion
+  api/analytics/             Dashboard login/session, data, CSV export, storage, rollup
   sitemap.ts, robots.ts, icon.png, favicon.ico, opengraph-image.tsx
+middleware.ts                Nonce Content-Security-Policy for /analytics
 components/                  UI (server components unless marked "use client")
+  analytics/                 Tracker (mounted in the root layout), dashboard, charts, login, session guard
 lib/
   edition-service.ts         Read (cached) / generate (locked, cooled down) editions
   edition-view.ts            Stored edition -> what the UI renders (dedupe, slugs, sections)
@@ -20,8 +25,18 @@ lib/
   groq.ts, gemini.ts, tavily.ts  Generation pipeline
   generation-lock.ts, rate-limit.ts  Upstash Redis lock and limiter
   db.ts, schema.ts           Drizzle + Neon
+  analytics/                 Events schema, ingestion, visitor hashing, owner sessions,
+                             daily aggregation SQL (daily.ts), rollups, dashboard queries
 assets/fonts/                Fonts for the PNG social cards (SIL Open Font License)
+scripts/                     verify-pipeline.ts, verify-redis.ts, verify-analytics.ts
 ```
+
+## Analytics internals
+
+- **Tracking:** `lib/analytics/client.ts` queues events and sends them with `sendBeacon`, after 2 s, at 10 events, or when the page is hidden or unloads. Each event carries its own page path, because a batch can span a client-side navigation. Clicks are tracked by delegation from `data-track` / `data-track-*` attributes, or by calling `track()` directly. The 404 page renders `NotFoundBeacon` so its views are stored with page type `404`.
+- **Events:** each event name has a Zod props schema in `lib/analytics/events.ts`. `/api/track` validates events one at a time, so one bad event doesn't drop the batch.
+- **Aggregation:** `lib/analytics/daily.ts` builds the per-UTC-day SQL for each rollup table. The rollup (`rollup.ts`, one transaction per day) inserts those rows, and `queries.ts` runs the same SQL over days that aren't rolled up yet. A day counts as rolled up once it has a `daily_session_stats` row. Today and yesterday are always read raw.
+- **CSP:** the root layout's inline theme script (`lib/theme-script.ts`) is allowed by its SHA-256 hash, and Next.js adds the per-request nonce to its own scripts. The nonce isn't read in the root layout, because that would force every public page to render per request.
 
 ## Rendering and caching
 

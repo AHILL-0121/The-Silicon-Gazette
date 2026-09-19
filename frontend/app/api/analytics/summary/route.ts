@@ -26,13 +26,16 @@ export async function GET(req: Request) {
     }
 
     const { from, to } = parsed.data;
+    if (from > to) {
+        return NextResponse.json({ error: "from must not be after to" }, { status: 400 });
+    }
 
-    // Also fetch previous period for comparison
-    const fromMs = new Date(from + "T00:00:00Z").getTime();
-    const toMs = new Date(to + "T23:59:59Z").getTime();
-    const rangeMs = toMs - fromMs;
-    const prevFrom = new Date(fromMs - rangeMs).toISOString().slice(0, 10);
-    const prevTo = new Date(fromMs - 1).toISOString().slice(0, 10);
+    // The previous period has the same number of whole UTC days and ends the day before `from`.
+    const DAY_MS = 86_400_000;
+    const fromMs = Date.parse(`${from}T00:00:00Z`);
+    const days = Math.round((Date.parse(`${to}T00:00:00Z`) - fromMs) / DAY_MS) + 1;
+    const prevFrom = new Date(fromMs - days * DAY_MS).toISOString().slice(0, 10);
+    const prevTo = new Date(fromMs - DAY_MS).toISOString().slice(0, 10);
 
     const [current, previous] = await Promise.all([
         querySummary(from, to),

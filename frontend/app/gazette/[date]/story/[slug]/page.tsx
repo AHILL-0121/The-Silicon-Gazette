@@ -14,7 +14,7 @@ import { editionCommands } from "@/lib/commands";
 import { OPEN_GRAPH_DEFAULTS, twitterCard } from "@/lib/metadata";
 import { storyGraph } from "@/lib/structured-data";
 import { formatDisplayDate } from "@/lib/date";
-import { CATEGORY_LABELS, excerpt, type StoryView } from "@/lib/edition-view";
+import { CATEGORY_LABELS, excerpt, urlHost, type StoryView } from "@/lib/edition-view";
 import { readAdjacentEditionDates } from "@/lib/edition-service";
 import { lookupStory } from "@/lib/story-lookup";
 
@@ -132,7 +132,7 @@ export default async function StoryPage({ params }: PageProps) {
             <div className="flex flex-wrap gap-2">
               <ShareButton title={story.headline} text={excerpt(story.summary, 120)} url={story.href} className="btn px-3.5" />
               {story.sourceUrl && (
-                <a href={story.sourceUrl} target="_blank" rel="noopener noreferrer" className="btn px-3.5">
+                <a href={story.sourceUrl} target="_blank" rel="noopener noreferrer" className="btn px-3.5" data-track="source_click" data-track-host={urlHost(story.sourceUrl)}>
                   Source <span aria-hidden="true">↗</span>
                   <span className="sr-only">: {story.sourceLabel} (opens in a new tab)</span>
                 </a>
@@ -149,7 +149,14 @@ export default async function StoryPage({ params }: PageProps) {
             <p className="mt-10 border-t border-rule pt-5 font-sans text-sm text-muted">
               This story was written by a language model from reporting by{" "}
               {story.sourceUrl ? (
-                <a href={story.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-ink underline underline-offset-4">
+                <a
+                  href={story.sourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-ink underline underline-offset-4"
+                  data-track="source_click"
+                  data-track-host={urlHost(story.sourceUrl)}
+                >
                   {story.sourceLabel}
                 </a>
               ) : (

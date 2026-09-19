@@ -70,6 +70,15 @@ export function excerpt(text: string, max = 180): string {
   return `${cut.slice(0, lastSpace > max * 0.6 ? lastSpace : max).replace(/[,;:.\s]+$/, "")}…`;
 }
 
+/** Host name without "www.", for analytics (`source_click`); "" when unparsable. */
+export function urlHost(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Models often paste the result URL into the source field
  * ("Reuters Technology (https://www.reuters.com/technology)"). Readers get the

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 
+import { track } from "@/lib/analytics/client";
 import { archiveHref } from "@/lib/archive-url";
 
 export interface CategoryChip {
@@ -40,6 +41,16 @@ export function ArchiveControls({ q, category, chips, allCount, summary, childre
     lastPushed.current = q;
   }, [q]);
 
+  // One archive_search per distinct query once its results render. Only the
+  // result count is sent, never the search text.
+  const lastTracked = useRef<string | null>(null);
+  useEffect(() => {
+    const term = q.trim();
+    if (!term || term === lastTracked.current) return;
+    lastTracked.current = term;
+    track("archive_search", { results: allCount });
+  }, [q, allCount]);
+
   useEffect(() => {
     const next = value.trim();
     if (next === lastPushed.current.trim()) return;
@@ -59,6 +70,9 @@ export function ArchiveControls({ q, category, chips, allCount, summary, childre
         key={chipValue ?? "all"}
         href={archiveHref({ q: value.trim() || null, category: chipValue })}
         scroll={false}
+        onClick={() => {
+          if (!selected) track("archive_filter", { category: chipValue ?? "all" });
+        }}
         aria-current={selected ? "true" : undefined}
         className={`chip shrink-0 transition-colors ${selected ? "border-ink bg-ink text-paper" : "hover:border-ink hover:text-ink"}`}
       >

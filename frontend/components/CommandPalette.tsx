@@ -75,7 +75,18 @@ export function CommandPalette({ entries }: { entries: CommandEntry[] }) {
     track("palette_open", { via });
   }, []);
 
+  // Latest search state for close(): a typed search that ends without a choice
+  // is recorded as chose: false. Only the result count is sent, never the text.
+  const searchState = useRef({ typed: false, results: 0 });
+  useEffect(() => {
+    searchState.current = { typed: query.trim() !== "", results: results.length };
+  }, [query, results]);
+
   const close = useCallback(() => {
+    if (searchState.current.typed) {
+      track("palette_search", { results: searchState.current.results, chose: false });
+    }
+    searchState.current = { typed: false, results: 0 };
     setOpen(false);
     returnFocus.current?.focus?.();
   }, []);
@@ -125,6 +136,7 @@ export function CommandPalette({ entries }: { entries: CommandEntry[] }) {
 
   function choose(entry: CommandEntry) {
     track("palette_search", { results: results.length, chose: true });
+    searchState.current = { typed: false, results: 0 };
     setOpen(false);
     if (entry.href.startsWith("#")) {
       const target = document.getElementById(entry.href.slice(1));

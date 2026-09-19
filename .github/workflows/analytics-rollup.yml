@@ -1,0 +1,55 @@
+name: Analytics Rollup
+on:
+  schedule:
+    # 00:20 UTC: rolls up yesterday (UTC) once the day is complete. Idempotent,
+    # so the Vercel Cron backup at 02:00 UTC re-running it is harmless.
+    - cron: "20 0 * * *"
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "Single UTC day to roll up (YYYY-MM-DD). Empty = yesterday."
+        required: false
+        default: ""
+      from:
+        description: "Backfill start (YYYY-MM-DD). Use with 'to'; max 400 days."
+        required: false
+        default: ""
+      to:
+        description: "Backfill end (YYYY-MM-DD), inclusive."
+        required: false
+        default: ""
+jobs:
+  rollup:
+    runs-on: ubuntu-latest
+    env:
+      # Set a repository variable SITE_URL to the canonical deployment URL.
+      SITE_URL: ${{ vars.SITE_URL || 'https://sa-the-silicon-gazette.vercel.app' }}
+    steps:
+      - name: Build request body
+        id: body
+        env:
+          DAY: ${{ github.event.inputs.day }}
+          FROM: ${{ github.event.inputs.from }}
+          TO: ${{ github.event.inputs.to }}
+        run: |
+          valid() { [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; }
+          if [ -n "$FROM" ] || [ -n "$TO" ]; then
+            valid "$FROM" && valid "$TO" || { echo "::error::from and to must both be YYYY-MM-DD"; exit 1; }
+            BODY="{\"from\":\"$FROM\",\"to\":\"$TO\"}"
+          elif [ -n "$DAY" ]; then
+            valid "$DAY" || { echo "::error::day must be YYYY-MM-DD"; exit 1; }
+            BODY="{\"day\":\"$DAY\"}"
+          else
+            BODY="{}"
+          fi
+          echo "json=$BODY" >> "$GITHUB_OUTPUT"
+      - name: Run rollup
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BODY: ${{ steps.body.outputs.json }}
+        run: |
+          curl --fail-with-body --show-error --location --retry 2 --retry-delay 30 --max-time 320 \
+            -X POST "${SITE_URL}/api/analytics/rollup" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -d "$BODY"

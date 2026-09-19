@@ -11,6 +11,7 @@ import { Tracker } from "@/components/analytics/Tracker";
 import { OPEN_GRAPH_DEFAULTS } from "@/lib/metadata";
 import { SITE_DESCRIPTION, SITE_NAME, siteUrl } from "@/lib/site";
 import { siteGraph } from "@/lib/structured-data";
+import { THEME_SCRIPT } from "@/lib/theme-script";
 
 import "./globals.css";
 
@@ -63,9 +64,6 @@ export const viewport: Viewport = {
   themeColor: "#f4f0e7"
 };
 
-// Light is the default. Dark applies only when the reader chose it with the
-// toggle; runs before first paint so a stored choice never flashes.
-const themeScript = `(function(){try{if(localStorage.getItem("sg-theme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
@@ -76,7 +74,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       suppressHydrationWarning
     >
       <head>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         <JsonLd data={siteGraph()} />
       </head>
       <body>

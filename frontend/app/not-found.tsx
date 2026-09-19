@@ -1,3 +1,4 @@
+import { NotFoundBeacon } from "@/components/analytics/NotFoundBeacon";
 import { ErrorState } from "@/components/ErrorState";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
@@ -24,6 +25,7 @@ export default function NotFound() {
         />
       </main>
       <SiteFooter />
+      <NotFoundBeacon />
     </>
   );
 }

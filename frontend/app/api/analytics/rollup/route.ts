@@ -3,17 +3,24 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { rollupDay } from "@/lib/analytics/rollup";
+import { logEvent } from "@/lib/logger";
+import { rollupDay, storageReport } from "@/lib/analytics/rollup";
 import { utcDayString } from "@/lib/analytics/visitor";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
-const bodySchema = z.object({
-    day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-    to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
-});
+const MAX_DAYS = 400;
+
+const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const bodySchema = z
+    .object({
+        day: DATE.optional(),
+        from: DATE.optional(),
+        to: DATE.optional()
+    })
+    .refine((b) => Boolean(b.from) === Boolean(b.to), { message: "from and to go together" })
+    .refine((b) => !b.from || !b.to || b.from <= b.to, { message: "from must not be after to" });
 
 function hasCronSecret(req: Request): boolean {
     const secret = process.env.CRON_SECRET;
@@ -28,13 +35,55 @@ function daysBetween(from: string, to: string): string[] {
     const days: string[] = [];
     const cursor = new Date(from + "T00:00:00Z");
     const end = new Date(to + "T00:00:00Z");
-    while (cursor <= end && days.length <= 400) {
+    while (cursor <= end && days.length <= MAX_DAYS) {
         days.push(cursor.toISOString().slice(0, 10));
         cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
     return days;
 }
 
+async function run(input: z.infer<typeof bodySchema>) {
+    let days: string[];
+    if (input.from && input.to) {
+        days = daysBetween(input.from, input.to);
+        if (days.length > MAX_DAYS) {
+            return NextResponse.json({ error: `Max ${MAX_DAYS} days per call` }, { status: 400 });
+        }
+    } else {
+        // Default: yesterday UTC
+        days = [input.day ?? utcDayString(new Date(Date.now() - 86_400_000))];
+    }
+
+    const results: { day: string; status: "ok" | "error"; error?: string }[] = [];
+    for (const day of days) {
+        try {
+            await rollupDay(day);
+            results.push({ day, status: "ok" });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logEvent("error", "analytics.rollup.failed", { day, error: message });
+            results.push({ day, status: "error", error: message });
+        }
+    }
+
+    let storage: Awaited<ReturnType<typeof storageReport>> | null = null;
+    try {
+        storage = await storageReport();
+        if (storage.warning) {
+            logEvent("warn", "analytics.storage.high", { usedPct: storage.usedPct, databaseBytes: storage.databaseBytes });
+        }
+    } catch {
+        // The report is informational; the rollup result stands on its own.
+    }
+
+    const failed = results.some((r) => r.status === "error");
+    return NextResponse.json(
+        { rolled: results.filter((r) => r.status === "ok").length, results, storage },
+        { status: failed ? 500 : 200, headers: { "Cache-Control": "no-store" } }
+    );
+}
+
+/** GitHub Actions / manual runs: `{}` (yesterday), `{ day }` or `{ from, to }` (backfill). */
 export async function POST(req: Request) {
     if (!hasCronSecret(req)) {
         return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -47,33 +96,18 @@ export async function POST(req: Request) {
     } catch {
         return NextResponse.json({ error: "Invalid body" }, { status: 400 });
     }
+    return run(body);
+}
 
-    const days: string[] = [];
-
-    if (body.from && body.to) {
-        const range = daysBetween(body.from, body.to);
-        if (range.length > 400) {
-            return NextResponse.json({ error: "Max 400 days per call" }, { status: 400 });
-        }
-        days.push(...range);
-    } else {
-        // Default: yesterday UTC
-        const yesterday = new Date(Date.now() - 86400000);
-        days.push(body.day ?? utcDayString(yesterday));
+/** Vercel Cron entry point (sends `Authorization: Bearer $CRON_SECRET`). Accepts `?day=`. */
+export async function GET(req: Request) {
+    if (!hasCronSecret(req)) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const results: { day: string; status: "ok" | "error"; error?: string }[] = [];
-    for (const day of days) {
-        try {
-            await rollupDay(day);
-            results.push({ day, status: "ok" });
-        } catch (error) {
-            results.push({ day, status: "error", error: error instanceof Error ? error.message : String(error) });
-        }
+    const parsed = bodySchema.safeParse({ day: new URL(req.url).searchParams.get("day") ?? undefined });
+    if (!parsed.success) {
+        return NextResponse.json({ error: "Invalid day" }, { status: 400 });
     }
-
-    return NextResponse.json(
-        { rolled: results.filter((r) => r.status === "ok").length, results },
-        { headers: { "Cache-Control": "no-store" } }
-    );
+    return run(parsed.data);
 }

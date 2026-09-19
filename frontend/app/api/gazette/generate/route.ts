@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { revalidateTag } from "next/cache";
 import { NextResponse } from "next/server";
 
+import { trackGenerateRequest } from "@/lib/analytics/ingest";
 import { compareEditionDate, isValidEditionDate, toEditionDate } from "@/lib/date";
 import {
   EDITIONS_TAG,
@@ -35,7 +36,12 @@ function hasCronSecret(req: Request): boolean {
   return expected.length === received.length && timingSafeEqual(expected, received);
 }
 
-async function runGeneration(date: string, trusted: boolean) {
+/** Filled in by runGeneration for the `generate_request` analytics event. */
+interface GenerationOutcome {
+  cached: boolean;
+}
+
+async function runGeneration(date: string, trusted: boolean, outcome: GenerationOutcome) {
   if (!isValidEditionDate(date)) {
     return NextResponse.json({ error: "Invalid date format. Use YYYY-MM-DD." }, { status: 400 });
   }
@@ -56,6 +62,7 @@ async function runGeneration(date: string, trusted: boolean) {
       return NextResponse.json({ error: "Edition generation returned no data." }, { status: 503 });
     }
 
+    outcome.cached = result.cached;
     if (!result.cached) {
       // New edition: refresh cached archive listings, adjacent-date links and
       // any cached "no edition" read for a backfilled past date.
@@ -97,34 +104,50 @@ async function rateLimitResponse(req: Request) {
   );
 }
 
+/** Runs a handler and records its outcome as one `generate_request` event. */
+async function tracked(
+  req: Request,
+  trusted: boolean,
+  handle: (outcome: GenerationOutcome) => Promise<NextResponse>
+): Promise<NextResponse> {
+  const outcome: GenerationOutcome = { cached: false };
+  const response = await handle(outcome);
+  trackGenerateRequest(req, { trusted, cached: outcome.cached, status: response.status });
+  return response;
+}
+
 export async function POST(req: Request) {
   const trusted = hasCronSecret(req);
-  if (!trusted) {
-    const limited = await rateLimitResponse(req);
-    if (limited) return limited;
-  }
+  return tracked(req, trusted, async (outcome) => {
+    if (!trusted) {
+      const limited = await rateLimitResponse(req);
+      if (limited) return limited;
+    }
 
-  let payload: { date?: string } = {};
-  try {
-    payload = (await req.json()) as { date?: string };
-  } catch {
-    payload = {};
-  }
+    let payload: { date?: string } = {};
+    try {
+      payload = (await req.json()) as { date?: string };
+    } catch {
+      payload = {};
+    }
 
-  return runGeneration(payload.date ?? toEditionDate(), trusted);
+    return runGeneration(payload.date ?? toEditionDate(), trusted, outcome);
+  });
 }
 
 /** Vercel Cron entry point. Sends `Authorization: Bearer $CRON_SECRET` when that env var is set. */
 export async function GET(req: Request) {
   const trusted = hasCronSecret(req);
-  if (process.env.CRON_SECRET && !trusted) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (!trusted) {
-    const limited = await rateLimitResponse(req);
-    if (limited) return limited;
-  }
+  return tracked(req, trusted, async (outcome) => {
+    if (process.env.CRON_SECRET && !trusted) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    if (!trusted) {
+      const limited = await rateLimitResponse(req);
+      if (limited) return limited;
+    }
 
-  const date = new URL(req.url).searchParams.get("date") ?? toEditionDate();
-  return runGeneration(date, trusted);
+    const date = new URL(req.url).searchParams.get("date") ?? toEditionDate();
+    return runGeneration(date, trusted, outcome);
+  });
 }

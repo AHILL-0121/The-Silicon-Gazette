@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { logEvent } from "@/lib/logger";
 
 import { events } from "./schema";
+import { deviceFromUA, utcDayString, visitorHash } from "./visitor";
 
 // ---------------------------------------------------------------------------
 // Row shape written by the ingestion layer
@@ -60,7 +61,38 @@ export function insertEventsAfter(rows: EventRow[]): void {
 }
 
 /**
- * Direct insert (no `after()`). Used by server-side callers in generate route.
+ * Records one `generate_request` after the response is sent. Server-side, so
+ * it counts cron and scripted callers too (no bot/DNT filtering); the IP is
+ * only used for the daily visitor hash, as in /api/track.
+ */
+export function trackGenerateRequest(
+    req: Request,
+    props: { trusted: boolean; cached: boolean; status: number }
+): void {
+    const ua = req.headers.get("user-agent") ?? "";
+    const ip =
+        req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+        req.headers.get("x-real-ip") ??
+        "unknown";
+    const country = req.headers.get("x-vercel-ip-country");
+    const path = new URL(req.url).pathname;
+
+    insertEventsAfter([
+        {
+            name: "generate_request",
+            path,
+            pageType: "other",
+            visitorHash: visitorHash(ip, ua, utcDayString()),
+            sessionId: props.trusted ? "server:cron" : "server",
+            country: country && country.length === 2 ? country : null,
+            device: deviceFromUA(ua),
+            props
+        }
+    ]);
+}
+
+/**
+ * Direct insert (no `after()`), for scripts and callers outside a request.
  */
 export async function insertEvents(rows: EventRow[]): Promise<void> {
     if (rows.length === 0) return;

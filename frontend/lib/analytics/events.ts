@@ -49,39 +49,59 @@ const generateRequestProps = z.object({ trusted: z.boolean(), cached: z.boolean(
 // ---------------------------------------------------------------------------
 // Discriminated union — used by the ingestion endpoint
 // ---------------------------------------------------------------------------
+
+/**
+ * Page context captured when the event happened, not when the batch was sent:
+ * a batch can span a client-side navigation.
+ */
+const eventContext = {
+    path: z.string().max(1024).optional(),
+    /** External referrer; set on the landing pageview only. */
+    referrer: z.string().max(1024).optional(),
+    utmSource: z.string().max(256).optional(),
+    utmMedium: z.string().max(256).optional(),
+    utmCampaign: z.string().max(256).optional(),
+    /** The page rendered the 404 screen. */
+    notFound: z.boolean().optional()
+};
+
+function eventOf<N extends string, P extends z.ZodTypeAny>(name: N, props: P) {
+    return z.object({ name: z.literal(name), props, ...eventContext });
+}
+
 export const analyticsEventSchema = z.discriminatedUnion("name", [
-    z.object({ name: z.literal("pageview"), props: pageviewProps }),
-    z.object({ name: z.literal("page_exit"), props: pageExitProps }),
-    z.object({ name: z.literal("read_depth"), props: readDepthProps }),
-    z.object({ name: z.literal("read_complete"), props: readCompleteProps }),
-    z.object({ name: z.literal("story_open"), props: storyOpenProps }),
-    z.object({ name: z.literal("repo_click"), props: repoClickProps }),
-    z.object({ name: z.literal("source_click"), props: sourceClickProps }),
-    z.object({ name: z.literal("share"), props: shareProps }),
-    z.object({ name: z.literal("palette_open"), props: paletteOpenProps }),
-    z.object({ name: z.literal("palette_search"), props: paletteSearchProps }),
-    z.object({ name: z.literal("archive_search"), props: archiveSearchProps }),
-    z.object({ name: z.literal("archive_filter"), props: archiveFilterProps }),
-    z.object({ name: z.literal("theme_toggle"), props: themeToggleProps }),
-    z.object({ name: z.literal("reader_control"), props: readerControlProps }),
-    z.object({ name: z.literal("edition_nav"), props: editionNavProps }),
-    z.object({ name: z.literal("section_nav"), props: sectionNavProps }),
-    z.object({ name: z.literal("generate_request"), props: generateRequestProps })
+    eventOf("pageview", pageviewProps),
+    eventOf("page_exit", pageExitProps),
+    eventOf("read_depth", readDepthProps),
+    eventOf("read_complete", readCompleteProps),
+    eventOf("story_open", storyOpenProps),
+    eventOf("repo_click", repoClickProps),
+    eventOf("source_click", sourceClickProps),
+    eventOf("share", shareProps),
+    eventOf("palette_open", paletteOpenProps),
+    eventOf("palette_search", paletteSearchProps),
+    eventOf("archive_search", archiveSearchProps),
+    eventOf("archive_filter", archiveFilterProps),
+    eventOf("theme_toggle", themeToggleProps),
+    eventOf("reader_control", readerControlProps),
+    eventOf("edition_nav", editionNavProps),
+    eventOf("section_nav", sectionNavProps),
+    eventOf("generate_request", generateRequestProps)
 ]);
 
 export type AnalyticsEvent = z.infer<typeof analyticsEventSchema>;
 
-// Batch schema used by /api/track
+/**
+ * Batch envelope used by /api/track. Events are validated one by one against
+ * `analyticsEventSchema`, so one malformed event doesn't discard the others.
+ * `path` is the fallback for events that carry none.
+ */
 export const trackBatchSchema = z.object({
-    events: z.array(analyticsEventSchema).min(1).max(10),
+    events: z.array(z.unknown()).min(1).max(10),
     path: z.string().max(1024),
     sessionId: z.string().max(128),
     device: z.enum(["mobile", "tablet", "desktop"]).optional(),
-    viewportW: z.number().int().nonnegative().optional(),
-    referrer: z.string().max(1024).optional(),
-    utmSource: z.string().max(256).optional(),
-    utmMedium: z.string().max(256).optional(),
-    utmCampaign: z.string().max(256).optional()
+    viewportW: z.number().int().nonnegative().optional()
 });
 
 export type TrackBatch = z.infer<typeof trackBatchSchema>;

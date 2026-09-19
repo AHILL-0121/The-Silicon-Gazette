@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { editionCommands } from "@/lib/commands";
 import { formatDisplayDate } from "@/lib/date";
-import { CATEGORY_LABELS, type EditionView, type SectionView } from "@/lib/edition-view";
+import { CATEGORY_LABELS, urlHost, type EditionView, type SectionView } from "@/lib/edition-view";
 import type { EditionRecord } from "@/lib/types";
 
 import { editionGraph } from "@/lib/structured-data";
@@ -131,7 +131,14 @@ export function EditionPage({ edition, view, previousDate, nextDate }: EditionPa
                 </div>
                 <div className="mt-6 flex flex-wrap items-center gap-3">
                   {lead.sourceUrl ? (
-                    <a href={lead.sourceUrl} target="_blank" rel="noopener noreferrer" className="btn">
+                    <a
+                      href={lead.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn"
+                      data-track="source_click"
+                      data-track-host={urlHost(lead.sourceUrl)}
+                    >
                       Read at {lead.sourceLabel}
                       <span aria-hidden="true">↗</span>
                       <span className="sr-only">(opens in a new tab)</span>

@@ -5,12 +5,14 @@ import { NextResponse } from "next/server";
 import { getRedis } from "@/lib/redis";
 
 import { insertEventsAfter, type EventRow } from "@/lib/analytics/ingest";
-import { trackBatchSchema } from "@/lib/analytics/events";
+import { analyticsEventSchema, trackBatchSchema, type AnalyticsEvent } from "@/lib/analytics/events";
 import { visitorHash, isBot, deviceFromUA, referrerHost, pageTypeFromPath, utcDayString, bucketViewport } from "@/lib/analytics/visitor";
 import { siteUrl } from "@/lib/site";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 10;
+
+const MAX_BODY_BYTES = 4096;
 
 // ---------------------------------------------------------------------------
 // Rate limiter for /api/track — drops events (not blocks) when Redis is down
@@ -37,13 +39,18 @@ function extractIp(req: Request): string {
     );
 }
 
+/** Pathname only: no query string or hash is ever stored. */
+function cleanPath(path: string): string {
+    return path.split(/[?#]/)[0] || "/";
+}
+
 // ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 export async function POST(req: Request) {
-    // 1. Size limit (~4 KB)
+    // 1. Size limit (~4 KB). Content-Length can be absent, so the body is checked too.
     const contentLength = Number(req.headers.get("content-length") ?? "0");
-    if (contentLength > 4096) {
+    if (contentLength > MAX_BODY_BYTES) {
         return new NextResponse(null, { status: 413 });
     }
 
@@ -65,40 +72,52 @@ export async function POST(req: Request) {
     let body: unknown;
     try {
         const text = await req.text();
+        if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) {
+            return new NextResponse(null, { status: 413 });
+        }
         if (!text || text === "null") return new NextResponse(null, { status: 204 });
         body = JSON.parse(text);
     } catch {
         return new NextResponse(null, { status: 400 });
     }
 
-    // 4. Rate limit — drops events when limiter is down (tracking must not block readers)
+    // 4. Rate limit. When the limiter is configured but unreachable, events are
+    //    dropped (204) rather than accepted unmetered; readers are never blocked.
     const ip = extractIp(req);
-    try {
-        const limiter = getTrackLimiter();
-        if (limiter) {
+    const limiter = getTrackLimiter();
+    if (limiter) {
+        try {
             const result = await limiter.limit(ip);
             if (!result.success) {
-                return new NextResponse(null, { status: 204 }); // Drop silently
+                return new NextResponse(null, { status: 204 });
             }
+        } catch {
+            return new NextResponse(null, { status: 204 });
         }
-    } catch {
-        // Limiter error → drop, don't block
     }
 
-    // 5. Zod validation
+    // 5. Zod validation: the envelope, then each event on its own
     const parsed = trackBatchSchema.safeParse(body);
     if (!parsed.success) {
         return new NextResponse(null, { status: 400 });
     }
-
     const batch = parsed.data;
+
+    const events: AnalyticsEvent[] = [];
+    for (const raw of batch.events) {
+        const event = analyticsEventSchema.safeParse(raw);
+        if (event.success) events.push(event.data);
+    }
+    if (events.length === 0) {
+        return new NextResponse(null, { status: 400 });
+    }
 
     // 6. Bot / DNT / GPC / analytics-path skip
     const ua = req.headers.get("user-agent") ?? "";
     const dnt = req.headers.get("dnt") ?? "";
     const gpc = req.headers.get("sec-gpc") ?? "";
 
-    if (isBot(ua) || dnt === "1" || gpc === "1" || batch.path.startsWith("/analytics")) {
+    if (isBot(ua) || dnt === "1" || gpc === "1") {
         return new NextResponse(null, { status: 204 });
     }
 
@@ -108,29 +127,38 @@ export async function POST(req: Request) {
     const hash = visitorHash(ip, ua, day);
     const device = batch.device ?? deviceFromUA(ua, batch.viewportW);
     const viewport = batch.viewportW !== undefined ? bucketViewport(batch.viewportW) : null;
-    const { pageType, editionDate, storySlug } = pageTypeFromPath(batch.path);
-    const refHost = referrerHost(batch.referrer ?? req.headers.get("referer") ?? "", new URL(site).hostname);
+    const siteHost = new URL(site).hostname;
 
-    const rows: EventRow[] = batch.events.map((event) => ({
-        name: event.name,
-        path: batch.path.split("?")[0], // No query strings stored
-        pageType,
-        editionDate,
-        storySlug,
-        visitorHash: hash,
-        sessionId: batch.sessionId,
-        referrerHost: refHost,
-        utmSource: batch.utmSource ?? null,
-        utmMedium: batch.utmMedium ?? null,
-        utmCampaign: batch.utmCampaign ?? null,
-        country: typeof country === "string" && country.length === 2 ? country : null,
-        device,
-        viewportW: viewport,
-        props: event.props as Record<string, unknown>
-    }));
+    const rows: EventRow[] = [];
+    for (const event of events) {
+        const path = cleanPath(event.path ?? batch.path);
+        if (path.startsWith("/analytics")) continue;
+
+        const info = event.notFound
+            ? { pageType: "404" as const, editionDate: null, storySlug: null }
+            : pageTypeFromPath(path);
+
+        rows.push({
+            name: event.name,
+            path,
+            pageType: info.pageType,
+            editionDate: info.editionDate,
+            storySlug: info.storySlug,
+            visitorHash: hash,
+            sessionId: batch.sessionId,
+            referrerHost: event.referrer ? referrerHost(event.referrer, siteHost) : null,
+            utmSource: event.utmSource ?? null,
+            utmMedium: event.utmMedium ?? null,
+            utmCampaign: event.utmCampaign ?? null,
+            country: typeof country === "string" && country.length === 2 ? country : null,
+            device,
+            viewportW: viewport,
+            props: event.props as Record<string, unknown>
+        });
+    }
 
     // 8. Deferred insert (never blocks the response)
-    insertEventsAfter(rows);
+    if (rows.length > 0) insertEventsAfter(rows);
 
     return new NextResponse(null, { status: 204 });
 }

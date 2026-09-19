@@ -25,7 +25,7 @@ export function PrintingPress() {
   }, []);
 
   return (
-    <div role="status" aria-live="polite" className="flex flex-col items-center py-16 text-center">
+    <div role="status" aria-live="polite" data-page-loading className="flex flex-col items-center py-16 text-center">
       <svg viewBox="0 0 240 150" className="w-full max-w-xs text-ink" aria-hidden="true">
         <style>{`
           .sg-roller { transform-box: fill-box; transform-origin: center; animation: sg-spin 1.4s linear infinite; }
