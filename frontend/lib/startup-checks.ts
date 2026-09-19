@@ -157,13 +157,11 @@ export async function runStartupChecks(): Promise<void> {
   logStatus("Tavily", tavily.configured && tavily.reachable, tavily.detail);
   logStatus("Gemini", gemini.configured && gemini.reachable, gemini.detail);
 
-  // Only required services alert; Gemini is an optional fallback.
-  const down = [
-    !dbHealthy && `Database: ${db.detail}`,
-    !(groq.configured && groq.reachable) && `Groq: ${groq.detail}`,
-    !(tavily.configured && tavily.reachable) && `Tavily: ${tavily.detail}`
-  ].filter(Boolean);
-  if (down.length > 0) {
-    await sendAlert("startup-degraded", "A required service failed its startup check.", { services: down });
+  // Only alert when the database is down — Groq/Tavily/Gemini timeouts during
+  // a slow Vercel cold-start are transient and not independently actionable.
+  if (!dbHealthy) {
+    await sendAlert("startup-degraded", "Database failed its startup check.", {
+      detail: db.detail
+    });
   }
 }
