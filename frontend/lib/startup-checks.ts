@@ -34,7 +34,7 @@ async function checkGroqHealth(): Promise<ApiHealth> {
       headers: {
         Authorization: `Bearer ${process.env.GROQ_API_KEY}`
       },
-      signal: timeoutSignal(6000)
+      signal: timeoutSignal(12000)
     });
 
     if (response.ok) {
@@ -72,7 +72,7 @@ async function checkTavilyHealth(): Promise<ApiHealth> {
   try {
     const response = await fetch("https://api.tavily.com", {
       method: "GET",
-      signal: timeoutSignal(6000)
+      signal: timeoutSignal(12000)
     });
 
     // Any HTTP response means network-level connectivity is working.
@@ -107,7 +107,7 @@ async function checkGeminiHealth(): Promise<ApiHealth> {
       {
         method: "GET",
         headers: { "x-goog-api-key": process.env.GEMINI_API_KEY },
-        signal: timeoutSignal(6000)
+        signal: timeoutSignal(12000)
       }
     );
 
