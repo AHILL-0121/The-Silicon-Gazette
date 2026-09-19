@@ -9,8 +9,8 @@ jobs:
   generate:
     runs-on: ubuntu-latest
     env:
-      # Set a repository variable SITE_URL when a custom domain is connected.
-      SITE_URL: ${{ vars.SITE_URL || 'https://the-silicon-gazette.vercel.app' }}
+      # Set a repository variable SITE_URL to the canonical deployment URL.
+      SITE_URL: ${{ vars.SITE_URL || 'https://sa-the-silicon-gazette.vercel.app' }}
     steps:
       - name: Compute today's edition date (UTC)
         id: edition_date
@@ -21,7 +21,7 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           DATE="${{ steps.edition_date.outputs.date }}"
-          curl --fail --show-error --retry 3 --retry-delay 30 --max-time 320 \
+          curl --fail --show-error --location --retry 3 --retry-delay 30 --max-time 320 \
             -X POST "${SITE_URL}/api/gazette/generate" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${CRON_SECRET}" \
@@ -30,4 +30,4 @@ jobs:
       # today's edition still isn't live.
       - name: Verify the edition is live
         run: |
-          curl --fail --show-error --retry 3 --retry-delay 20 --max-time 30 "${SITE_URL}/api/health"
+          curl --fail --show-error --location --retry 3 --retry-delay 20 --max-time 30 "${SITE_URL}/api/health"
