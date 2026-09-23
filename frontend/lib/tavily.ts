@@ -8,6 +8,27 @@ const TOPIC_QUERIES: Array<{ topic: "AI" | "TECH" | "OPEN SOURCE"; query: string
   { topic: "OPEN SOURCE", query: "trending open source GitHub repositories today" }
 ];
 
+/**
+ * A Tavily error response. 401/403 (bad key) and 432/433 (plan or pay-as-you-go
+ * limit reached) won't clear on retry, so they are marked permanent.
+ */
+export class TavilyError extends Error {
+  readonly permanent: boolean;
+
+  constructor(readonly status: number, body: string) {
+    super(`Tavily ${status}: ${body}`);
+    this.name = "TavilyError";
+    this.permanent = [401, 403, 432, 433].includes(status);
+  }
+
+  /** Short reason that is safe to show to API callers. */
+  get publicReason(): string {
+    if (this.status === 432 || this.status === 433) return "news search quota exhausted";
+    if (this.status === 401 || this.status === 403) return "news search API key rejected";
+    return `news search failed (HTTP ${this.status})`;
+  }
+}
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -27,12 +48,13 @@ async function fetchWithRetry(
       clearTimeout(timeout);
       if (!response.ok) {
         const body = await response.text();
-        throw new Error(`Tavily ${response.status}: ${body}`);
+        throw new TavilyError(response.status, body);
       }
       return response;
     } catch (error) {
       clearTimeout(timeout);
       lastError = error;
+      if (error instanceof TavilyError && error.permanent) break;
       if (attempt < retries) {
         await wait(350 * (attempt + 1));
       }

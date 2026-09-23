@@ -57,7 +57,7 @@ async function runGeneration(date: string, trusted: boolean, outcome: Generation
   }
 
   try {
-    const result = await getEditionForDate(date, { allowGenerate: true });
+    const result = await getEditionForDate(date, { allowGenerate: true, ignoreCooldown: trusted });
     if (!result.edition) {
       return NextResponse.json({ error: "Edition generation returned no data." }, { status: 503 });
     }
@@ -76,9 +76,10 @@ async function runGeneration(date: string, trusted: boolean, outcome: Generation
       latency_ms: result.edition.latency_ms
     });
   } catch (error) {
-    if (!(error instanceof GenerationFailedError)) {
-      logServerError("api:generate-edition", error);
+    if (error instanceof GenerationFailedError) {
+      return NextResponse.json({ error: error.message }, { status: 503 });
     }
+    logServerError("api:generate-edition", error);
     return NextResponse.json({ error: "Generation failed after retry. Press breakdown." }, { status: 503 });
   }
 }

@@ -18,7 +18,7 @@ import { acquireGenerationLock } from "./generation-lock";
 import { generateGazetteViaGemini, getGeminiModelName, isGeminiConfigured } from "./gemini";
 import { generateGazette, getGroqModelName, type RawEdition } from "./groq";
 import { errorFields, logEvent, logServerError } from "./logger";
-import { fetchNewsContext } from "./tavily";
+import { TavilyError, fetchNewsContext } from "./tavily";
 import type { ArchivePage, ArchiveQuery, EditionRecord } from "./types";
 
 export class NoEditionFoundError extends Error {}
@@ -39,8 +39,16 @@ const failures = (generationState.__gazetteFailures ??= new Map());
 
 async function runPipeline(date: string): Promise<EditionRecord> {
   const start = Date.now();
-  // Search once and reuse the results for the fallback provider.
-  const searchContext = await fetchNewsContext();
+  // Search once and reuse the results for the fallback provider. Without
+  // search results there is nothing to report, so name the reason and stop.
+  let searchContext: Awaited<ReturnType<typeof fetchNewsContext>>;
+  try {
+    searchContext = await fetchNewsContext();
+  } catch (error) {
+    logServerError("generation.search_failed", error, { date, elapsedMs: Date.now() - start });
+    const reason = error instanceof TavilyError ? error.publicReason : "news search failed";
+    throw new GenerationFailedError(`Generation failed: ${reason}.`, { cause: error });
+  }
   const allowedUrls = new Set(
     searchContext.blocks.flatMap((block) => block.results.map((result) => result.url))
   );
@@ -122,15 +130,20 @@ async function runLockedPipeline(date: string): Promise<EditionRecord> {
  * Generates and stores the edition for `date`. Concurrent callers in this
  * instance share one run, other instances wait on a Redis lock, and a recent
  * failure short-circuits instead of re-running the paid pipeline per visitor.
+ * Trusted callers (cron, maintainers) skip that cooldown so their retries
+ * actually retry; the daily budget still caps how many runs they can start.
  */
-export async function generateEdition(date: string): Promise<EditionRecord> {
+export async function generateEdition(
+  date: string,
+  options?: { ignoreCooldown?: boolean }
+): Promise<EditionRecord> {
   const running = inflight.get(date);
   if (running) {
     return running;
   }
 
   const failedAt = failures.get(date);
-  if (failedAt && Date.now() - failedAt < FAILURE_COOLDOWN_MS) {
+  if (!options?.ignoreCooldown && failedAt && Date.now() - failedAt < FAILURE_COOLDOWN_MS) {
     throw new GenerationFailedError("The presses are cooling down after a failed run. Try again shortly.");
   }
 
@@ -148,6 +161,8 @@ export async function generateEdition(date: string): Promise<EditionRecord> {
         ...errorFields(error),
         stack: undefined
       });
+      // Keep specific reasons (e.g. budget exhausted) so callers can report them.
+      if (error instanceof GenerationFailedError) throw error;
       throw new GenerationFailedError("Generation failed after retry. Press breakdown.");
     })
     .finally(() => {
@@ -243,7 +258,7 @@ export const readLatestEditionDate = unstable_cache(() => getLatestEditionDate()
 
 export async function getEditionForDate(
   date: string,
-  options?: { allowGenerate?: boolean }
+  options?: { allowGenerate?: boolean; ignoreCooldown?: boolean }
 ): Promise<{ edition: EditionRecord | null; cached: boolean }> {
   const cachedEdition = await readEdition(date);
   if (cachedEdition) {
@@ -254,7 +269,7 @@ export async function getEditionForDate(
     return { edition: null, cached: false };
   }
 
-  const generated = await generateEdition(date);
+  const generated = await generateEdition(date, { ignoreCooldown: options.ignoreCooldown });
   return { edition: generated, cached: false };
 }
 

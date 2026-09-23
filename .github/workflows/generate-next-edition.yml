@@ -21,7 +21,10 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           DATE="${{ steps.edition_date.outputs.date }}"
-          curl --fail --show-error --location --retry 3 --retry-delay 30 --max-time 320 \
+          # --fail-with-body prints the API's error message in the run log.
+          # Retries are spaced out and capped: each one is a full paid run that
+          # counts against the daily generation budget.
+          curl --fail-with-body --show-error --location --retry 2 --retry-delay 60 --max-time 320 \
             -X POST "${SITE_URL}/api/gazette/generate" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${CRON_SECRET}" \
