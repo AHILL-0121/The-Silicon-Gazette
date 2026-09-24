@@ -12,12 +12,13 @@ import {
 } from "./db";
 import { buildEditionView, visibleStorySlugs, type EditionView } from "./edition-view";
 import { normalizeEdition } from "./gazette";
-import { sendAlert } from "./alerts";
+import { sendAlert, sendNotice } from "./alerts";
 import { claimGenerationRun } from "./budget";
 import { acquireGenerationLock } from "./generation-lock";
 import { generateGazetteViaGemini, getGeminiModelName, isGeminiConfigured } from "./gemini";
 import { generateGazette, getGroqModelName, type RawEdition } from "./groq";
 import { errorFields, logEvent, logServerError } from "./logger";
+import { absoluteUrl } from "./site";
 import { TavilyError, fetchNewsContext } from "./tavily";
 import type { ArchivePage, ArchiveQuery, EditionRecord } from "./types";
 
@@ -37,7 +38,11 @@ const generationState = globalThis as typeof globalThis & {
 const inflight = (generationState.__gazetteInflight ??= new Map());
 const failures = (generationState.__gazetteFailures ??= new Map());
 
-async function runPipeline(date: string): Promise<EditionRecord> {
+function seconds(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+async function runPipeline(date: string, budget: { used: number; limit: number }): Promise<EditionRecord> {
   const start = Date.now();
   // Search once and reuse the results for the fallback provider. Without
   // search results there is nothing to report, so name the reason and stop.
@@ -52,6 +57,8 @@ async function runPipeline(date: string): Promise<EditionRecord> {
   const allowedUrls = new Set(
     searchContext.blocks.flatMap((block) => block.results.map((result) => result.url))
   );
+  const searchMs = Date.now() - start;
+  let fallbackReason: string | undefined;
 
   let raw: RawEdition;
   let model: string;
@@ -68,18 +75,33 @@ async function runPipeline(date: string): Promise<EditionRecord> {
       logEvent("warn", "generation.fallback_skipped", { date, reason: "not enough time left", elapsedMs: Date.now() - start });
       throw groqError;
     }
+    fallbackReason = groqError instanceof Error ? groqError.message : String(groqError);
     raw = await generateGazetteViaGemini(date, searchContext.serialized);
     model = getGeminiModelName();
   }
 
   const content = normalizeEdition(raw, { allowedUrls });
-  return saveEdition({
+  const record = await saveEdition({
     date,
     issue_num: computeIssueNumber(date),
     content,
     latency_ms: Date.now() - start,
     model
   });
+
+  const linkedSources = new Set(
+    [content.headline.url, ...content.stories.map((story) => story.url)].filter((url): url is string => Boolean(url))
+  );
+  await sendNotice(`generation-succeeded:${date}`, `Edition ${date} (No. ${record.issue_num}) published.`, {
+    lead: `[${content.headline.category}] ${content.headline.title}`,
+    contents: `${content.stories.length} stories, ${content.repos.length} repos, market brief ${content.market_brief ? "included" : "missing"}`,
+    sources: `${linkedSources.size} linked of ${allowedUrls.size} search results`,
+    model: fallbackReason ? `${model} (Gemini fallback; Groq failed: ${fallbackReason.slice(0, 200)})` : model,
+    timing: `${seconds(record.latency_ms ?? Date.now() - start)} total (search ${seconds(searchMs)}, writing ${seconds((record.latency_ms ?? 0) - searchMs)})`,
+    budget: `run ${budget.used} of ${budget.limit} today`,
+    url: absoluteUrl(`/gazette/${date}`)
+  });
+  return record;
 }
 
 const LOCK_POLL_INTERVAL_MS = 5_000;
@@ -120,7 +142,7 @@ async function runLockedPipeline(date: string): Promise<EditionRecord> {
     if (!budget.allowed) {
       throw new GenerationFailedError(`Daily generation budget exhausted (${budget.used}/${budget.limit}).`);
     }
-    return await runPipeline(date);
+    return await runPipeline(date, budget);
   } finally {
     if (lock.status === "acquired") await lock.release();
   }
@@ -156,10 +178,15 @@ export async function generateEdition(
     .catch(async (error) => {
       failures.set(date, Date.now());
       logServerError("generation.failed", error, { date });
+      const { error: message, errorName, cause } = errorFields(error);
       await sendAlert(`generation-failed:${date}`, `Edition ${date} failed to generate.`, {
-        edition: date,
-        ...errorFields(error),
-        stack: undefined
+        reason: message,
+        type: errorName,
+        cause,
+        attempt: options?.ignoreCooldown ? "trusted caller (cron/maintainer)" : "reader request",
+        nextStep: options?.ignoreCooldown
+          ? "retry via the Generate Today's Edition workflow"
+          : `reader requests paused for ${FAILURE_COOLDOWN_MS / 60_000} min`
       });
       // Keep specific reasons (e.g. budget exhausted) so callers can report them.
       if (error instanceof GenerationFailedError) throw error;

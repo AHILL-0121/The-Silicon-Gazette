@@ -29,22 +29,44 @@ export async function sendAlert(key: string, message: string, details: Record<st
       if (first !== "OK") return;
     }
 
-    const env = process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown";
-    const lines = Object.entries(details)
-      .filter(([, value]) => value !== undefined)
-      .map(([name, value]) => `• ${name}: ${typeof value === "string" ? value : JSON.stringify(value)}`);
-    const text = [`🗞️ The Silicon Gazette [${env}] ${message}`, ...lines].join("\n").slice(0, 1900);
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, content: text }),
-      signal: AbortSignal.timeout(5000)
-    });
-    if (!response.ok) {
-      logEvent("warn", "alert.delivery_failed", { key, status: response.status });
-    }
+    await postToWebhook(url, key, message, details);
   } catch (error) {
     logEvent("warn", "alert.delivery_failed", { key, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/**
+ * Posts a routine, non-alert message (e.g. a nightly job summary) to
+ * `ALERT_WEBHOOK_URL` in the same format as `sendAlert`, without its cooldown.
+ * Never throws.
+ */
+export async function sendNotice(key: string, message: string, details: Record<string, unknown> = {}): Promise<void> {
+  logEvent("info", "notice", { key, message, ...details });
+
+  const url = process.env.ALERT_WEBHOOK_URL;
+  if (!url) return;
+
+  try {
+    await postToWebhook(url, key, message, details);
+  } catch (error) {
+    logEvent("warn", "alert.delivery_failed", { key, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function postToWebhook(url: string, key: string, message: string, details: Record<string, unknown>): Promise<void> {
+  const env = process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "unknown";
+  const lines = Object.entries(details)
+    .filter(([, value]) => value !== undefined)
+    .map(([name, value]) => `• ${name}: ${typeof value === "string" ? value : JSON.stringify(value)}`);
+  const text = [`🗞️ The Silicon Gazette [${env}] ${message}`, ...lines].join("\n").slice(0, 1900);
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, content: text }),
+    signal: AbortSignal.timeout(5000)
+  });
+  if (!response.ok) {
+    logEvent("warn", "alert.delivery_failed", { key, status: response.status });
   }
 }
