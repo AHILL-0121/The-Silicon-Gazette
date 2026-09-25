@@ -3,8 +3,16 @@ import { and, asc, count, desc, eq, gt, lt, sql, type SQL } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/neon-http";
 
 import { logEvent } from "./logger";
-import { editions } from "./schema";
-import type { ArchivePage, ArchiveQuery, Category, EditionRecord, EditionSummary, GazetteEdition } from "./types";
+import { editions, searchContexts } from "./schema";
+import type {
+  ArchivePage,
+  ArchiveQuery,
+  Category,
+  EditionRecord,
+  EditionSummary,
+  GazetteEdition,
+  SearchTopicBlock
+} from "./types";
 
 interface SaveEditionInput {
   date: string;
@@ -199,6 +207,31 @@ export async function saveEdition(input: SaveEditionInput): Promise<EditionRecor
     }
     return toRecord(existing[0]);
   }, saveToMemory);
+}
+
+/** Stored search results are only needed while that day's edition is being retried. */
+const SEARCH_CONTEXT_KEEP_DAYS = 7;
+
+/** The day's stored Tavily results, or null if none were saved (or there is no database). */
+export async function getSearchContext(date: string): Promise<SearchTopicBlock[] | null> {
+  const db = getDb();
+  if (!db) return null;
+  const rows = await db
+    .select({ blocks: searchContexts.blocks })
+    .from(searchContexts)
+    .where(eq(searchContexts.date, date))
+    .limit(1);
+  return rows[0]?.blocks ?? null;
+}
+
+/** Stores the day's Tavily results (first write wins) and drops ones older than a week. */
+export async function saveSearchContext(date: string, blocks: SearchTopicBlock[]): Promise<void> {
+  const db = getDb();
+  if (!db) return;
+  await db.insert(searchContexts).values({ date, blocks }).onConflictDoNothing({ target: searchContexts.date });
+  await db
+    .delete(searchContexts)
+    .where(lt(searchContexts.date, sql`${date}::date - ${SEARCH_CONTEXT_KEEP_DAYS}::int`));
 }
 
 const leadTitle = sql<string>`${editions.content}->'headline'->>'title'`;

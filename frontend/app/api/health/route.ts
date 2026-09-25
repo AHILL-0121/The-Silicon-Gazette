@@ -6,8 +6,8 @@ import { getRedis } from "@/lib/redis";
 
 export const dynamic = "force-dynamic";
 
-/** Today's edition is expected by 01:00 UTC (crons run at 00:10 and 00:30). */
-const EDITION_DUE_HOUR_UTC = 1;
+/** Today's edition is expected by 05:00 UTC (crons run at 02:50 and 04:00). */
+const EDITION_DUE_HOUR_UTC = 5;
 
 type Check = { ok: boolean; ms?: number; detail?: string };
 

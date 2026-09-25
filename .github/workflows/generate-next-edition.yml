@@ -1,9 +1,10 @@
 name: Generate Today's Edition
 on:
   schedule:
-    # 00:10 UTC, right after the UTC date rolls over, so the first readers of
-    # the day get a pre-printed edition instead of waiting for generation.
-    - cron: "10 0 * * *"
+    # 02:50 UTC, outside the model providers' busiest hours and off the top of
+    # the hour, when GitHub's scheduler is most delayed.
+    # Readers who arrive earlier trigger generation themselves.
+    - cron: "50 2 * * *"
   workflow_dispatch:
 jobs:
   generate:

@@ -6,9 +6,11 @@ import {
   getAdjacentEditionDates,
   getEditionByDate,
   getLatestEditionDate,
+  getSearchContext,
   listEditionStoryIndex,
   listEditionSummariesPage,
-  saveEdition
+  saveEdition,
+  saveSearchContext
 } from "./db";
 import { buildEditionView, visibleStorySlugs, type EditionView } from "./edition-view";
 import { normalizeEdition } from "./gazette";
@@ -19,8 +21,8 @@ import { generateGazetteViaGemini, getGeminiModelName, isGeminiConfigured } from
 import { generateGazette, getGroqModelName, type RawEdition } from "./groq";
 import { errorFields, logEvent, logServerError } from "./logger";
 import { absoluteUrl } from "./site";
-import { TavilyError, fetchNewsContext } from "./tavily";
-import type { ArchivePage, ArchiveQuery, EditionRecord } from "./types";
+import { TavilyError, fetchNewsContext, serializeSearchContext } from "./tavily";
+import type { ArchivePage, ArchiveQuery, EditionRecord, SearchContext } from "./types";
 
 export class NoEditionFoundError extends Error {}
 export class GenerationFailedError extends Error {}
@@ -42,13 +44,42 @@ function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+/**
+ * Tavily is searched once per day. The results are stored before the models
+ * run, so a retry after a model failure reuses them instead of spending search
+ * quota again. If the stored copy can't be read (e.g. the table is missing),
+ * a fresh search keeps generation working.
+ */
+async function loadNewsContext(date: string): Promise<{ context: SearchContext; reused: boolean }> {
+  try {
+    const blocks = await getSearchContext(date);
+    if (blocks) {
+      return { context: { blocks, serialized: serializeSearchContext(blocks) }, reused: true };
+    }
+  } catch (error) {
+    logServerError("search_context.read_failed", error, { date });
+  }
+
+  const context = await fetchNewsContext();
+  // An empty search is not worth keeping: the next attempt should search again.
+  if (context.blocks.some((block) => block.results.length > 0)) {
+    try {
+      await saveSearchContext(date, context.blocks);
+    } catch (error) {
+      logServerError("search_context.save_failed", error, { date });
+    }
+  }
+  return { context, reused: false };
+}
+
 async function runPipeline(date: string, budget: { used: number; limit: number }): Promise<EditionRecord> {
   const start = Date.now();
   // Search once and reuse the results for the fallback provider. Without
   // search results there is nothing to report, so name the reason and stop.
-  let searchContext: Awaited<ReturnType<typeof fetchNewsContext>>;
+  let searchContext: SearchContext;
+  let searchReused: boolean;
   try {
-    searchContext = await fetchNewsContext();
+    ({ context: searchContext, reused: searchReused } = await loadNewsContext(date));
   } catch (error) {
     logServerError("generation.search_failed", error, { date, elapsedMs: Date.now() - start });
     const reason = error instanceof TavilyError ? error.publicReason : "news search failed";
@@ -76,7 +107,15 @@ async function runPipeline(date: string, budget: { used: number; limit: number }
       throw groqError;
     }
     fallbackReason = groqError instanceof Error ? groqError.message : String(groqError);
-    raw = await generateGazetteViaGemini(date, searchContext.serialized);
+    try {
+      raw = await generateGazetteViaGemini(date, searchContext.serialized);
+    } catch (geminiError) {
+      // Name both failures so the alert shows why Groq failed, not just the fallback.
+      const geminiReason = geminiError instanceof Error ? geminiError.message : String(geminiError);
+      throw new Error(`Groq failed: ${fallbackReason.slice(0, 300)} | Gemini fallback failed: ${geminiReason.slice(0, 300)}`, {
+        cause: geminiError
+      });
+    }
     model = getGeminiModelName();
   }
 
@@ -95,7 +134,7 @@ async function runPipeline(date: string, budget: { used: number; limit: number }
   await sendNotice(`generation-succeeded:${date}`, `Edition ${date} (No. ${record.issue_num}) published.`, {
     lead: `[${content.headline.category}] ${content.headline.title}`,
     contents: `${content.stories.length} stories, ${content.repos.length} repos, market brief ${content.market_brief ? "included" : "missing"}`,
-    sources: `${linkedSources.size} linked of ${allowedUrls.size} search results`,
+    sources: `${linkedSources.size} linked of ${allowedUrls.size} search results${searchReused ? " (reused from an earlier attempt)" : ""}`,
     model: fallbackReason ? `${model} (Gemini fallback; Groq failed: ${fallbackReason.slice(0, 200)})` : model,
     timing: `${seconds(record.latency_ms ?? Date.now() - start)} total (search ${seconds(searchMs)}, writing ${seconds((record.latency_ms ?? 0) - searchMs)})`,
     budget: `run ${budget.used} of ${budget.limit} today`,
