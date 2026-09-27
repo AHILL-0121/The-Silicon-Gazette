@@ -34,20 +34,29 @@ export async function claimGenerationRun(date: string): Promise<BudgetResult> {
   const key = `silicon-gazette-budget:${day}`;
 
   let used: number;
+  let allowed: boolean;
   const redis = getRedis();
   try {
     if (!redis) throw new Error("Redis not configured");
     used = await redis.incr(key);
     if (used === 1) await redis.expire(key, 2 * 24 * 60 * 60);
+    allowed = used <= limit;
+    // A refused claim runs nothing, so it gives its slot back. Otherwise the
+    // count keeps climbing past the limit and raising the limit mid-day
+    // (GENERATION_DAILY_LIMIT) would not let another run through.
+    if (!allowed) used = await redis.decr(key);
   } catch (error) {
     if (redis) {
       logEvent("warn", "budget.redis_unavailable", { error: error instanceof Error ? error.message : String(error) });
     }
-    used = (localCounts.get(key) ?? 0) + 1;
-    localCounts.set(key, used);
+    used = localCounts.get(key) ?? 0;
+    allowed = used < limit;
+    if (allowed) {
+      used += 1;
+      localCounts.set(key, used);
+    }
   }
 
-  const allowed = used <= limit;
   logEvent(allowed ? "info" : "error", "budget.claim", { date, day, used, limit, allowed });
   if (!allowed) {
     await sendAlert(`budget-exhausted:${day}`, "Daily generation budget exhausted; generation is paused until tomorrow (UTC).", {
