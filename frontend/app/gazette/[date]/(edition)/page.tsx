@@ -53,19 +53,9 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       description,
       url: `/gazette/${date}`,
       publishedTime: edition.generated_at,
-      section: CATEGORY_LABELS[view.lead.category],
-      // Listed explicitly: the card lives in the parent [date] folder, and a
-      // page's openGraph object would otherwise replace it.
-      images: [
-        {
-          url: `/gazette/${date}/opengraph-image`,
-          width: 1200,
-          height: 630,
-          alt: `The Silicon Gazette, ${displayDate}: ${view.lead.title}`
-        }
-      ]
+      section: CATEGORY_LABELS[view.lead.category]
     },
-    twitter: twitterCard(socialTitle, description, `/gazette/${date}/opengraph-image`)
+    twitter: twitterCard(socialTitle, description)
   };
 }
 

@@ -2,6 +2,14 @@ export const SITE_NAME = "The Silicon Gazette";
 export const SITE_TAGLINE = "All the code that's fit to print.";
 export const SITE_DESCRIPTION = "A daily broadsheet of AI, tech and open-source news. All the code that's fit to print.";
 
+/** The one social card every page shares (public/og-card.jpg, 1200×630). */
+export const SOCIAL_IMAGE = {
+  url: "/og-card.jpg",
+  width: 1200,
+  height: 630,
+  alt: "The Silicon Gazette: AI, tech and open source, a daily edition. All the code that's fit to print."
+};
+
 /**
  * Absolute origin used for canonical URLs, social images, the sitemap and
  * structured data. `NEXT_PUBLIC_BASE_URL` wins; on Vercel the production

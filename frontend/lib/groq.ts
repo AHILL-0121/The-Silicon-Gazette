@@ -103,9 +103,23 @@ ${usedHeadlines.map((headline) => `- ${headline}`).join("\n")}
 `;
 }
 
+/**
+ * Headlines from the last few editions. Search results can carry a story for
+ * several days, and without this the same event led the paper on consecutive
+ * days.
+ */
+export function formatRecentCoverage(recentHeadlines: string[]): string {
+  if (recentHeadlines.length === 0) return "";
+  return `
+Already published in recent editions (do NOT cover these events again unless the search results report a genuinely new development):
+${recentHeadlines.map((headline) => `- ${headline}`).join("\n")}
+`;
+}
+
 export function buildSectionPrompt(
   section: { name: string; category: Category; count: number },
-  usedHeadlines: string[]
+  usedHeadlines: string[],
+  recentHeadlines: string[] = []
 ): string {
   return `Write up to ${section.count} news stories for the "${section.name}" section (category ${section.category}).
 Respond with ONLY a JSON array:
@@ -118,7 +132,7 @@ Respond with ONLY a JSON array:
     "url": string
   }
 ]
-${formatExclusions(usedHeadlines)}
+${formatExclusions(usedHeadlines)}${formatRecentCoverage(recentHeadlines)}
 Rules:
 - Every story must cover a DIFFERENT news event from the search results.
 - If there are fewer distinct events that fit this section, return fewer stories rather than repeating one.
@@ -128,9 +142,9 @@ Rules:
 - url: copy the exact URL of the result you used from the search results.`;
 }
 
-export function buildMainEditionPrompt(date: string): string {
+export function buildMainEditionPrompt(date: string, recentHeadlines: string[] = []): string {
   return `Today's date: ${date}
-
+${formatRecentCoverage(recentHeadlines)}
 Generate the lead story and repository watch as a JSON object:
 {
   "headline": {
@@ -209,9 +223,13 @@ async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<
   throw lastError;
 }
 
-export async function generateGazette(date: string, searchContext: string): Promise<RawEdition> {
+export async function generateGazette(
+  date: string,
+  searchContext: string,
+  recentHeadlines: string[] = []
+): Promise<RawEdition> {
   const startedAt = Date.now();
-  const mainRaw = await completeWithGroq(`${searchContext}\n\n${buildMainEditionPrompt(date)}`, 2000);
+  const mainRaw = await completeWithGroq(`${searchContext}\n\n${buildMainEditionPrompt(date, recentHeadlines)}`, 2000);
   const mainEdition = parseModelJsonValue(mainRaw, "object") as Record<string, unknown>;
 
   const leadTitle = (mainEdition.headline as { title?: unknown } | undefined)?.title;
@@ -231,7 +249,7 @@ export async function generateGazette(date: string, searchContext: string): Prom
     }
     try {
       const raw = await completeWithGroq(
-        `${searchContext}\n\n${buildSectionPrompt(section, usedHeadlines)}`,
+        `${searchContext}\n\n${buildSectionPrompt(section, usedHeadlines, recentHeadlines)}`,
         2000
       );
       const parsed = parseModelJsonValue(raw, "array") as Array<Record<string, unknown> | null>;

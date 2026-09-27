@@ -44,7 +44,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
       publishedTime: loaded.edition.generated_at,
       section: CATEGORY_LABELS[story.category]
     },
-    twitter: twitterCard(story.headline, description, `${story.href}/opengraph-image`)
+    twitter: twitterCard(story.headline, description)
   };
 }
 

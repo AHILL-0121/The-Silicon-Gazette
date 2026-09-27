@@ -8,7 +8,7 @@ import { SmoothScroll } from "@/components/SmoothScroll";
 import { Toaster } from "@/components/Toaster";
 import { Tracker } from "@/components/analytics/Tracker";
 
-import { OPEN_GRAPH_DEFAULTS } from "@/lib/metadata";
+import { OPEN_GRAPH_DEFAULTS, twitterCard } from "@/lib/metadata";
 import { SITE_DESCRIPTION, SITE_NAME, siteUrl } from "@/lib/site";
 import { siteGraph } from "@/lib/structured-data";
 import { THEME_SCRIPT } from "@/lib/theme-script";
@@ -53,11 +53,7 @@ export const metadata: Metadata = {
     description: SITE_DESCRIPTION,
     url: "/"
   },
-  twitter: {
-    card: "summary_large_image",
-    title: SITE_NAME,
-    description: SITE_DESCRIPTION
-  }
+  twitter: twitterCard(SITE_NAME, SITE_DESCRIPTION)
 };
 
 export const viewport: Viewport = {

@@ -1,6 +1,12 @@
 import { parseModelJsonValue } from "./gazette";
 import { logEvent } from "./logger";
-import { STORY_SECTIONS, buildMainEditionPrompt, buildSystemPrompt, type RawEdition } from "./groq";
+import {
+  STORY_SECTIONS,
+  buildMainEditionPrompt,
+  buildSystemPrompt,
+  formatRecentCoverage,
+  type RawEdition
+} from "./groq";
 
 export const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
@@ -73,10 +79,17 @@ async function requestGemini(prompt: string, maxTokens: number): Promise<string>
   return text;
 }
 
-export async function generateGazetteViaGemini(date: string, searchContext: string): Promise<RawEdition> {
+export async function generateGazetteViaGemini(
+  date: string,
+  searchContext: string,
+  recentHeadlines: string[] = []
+): Promise<RawEdition> {
   logEvent("warn", "generation.fallback_gemini", { date, model: GEMINI_MODEL });
 
-  const mainRaw = await generateGeminiResponse(`${searchContext}\n\n${buildMainEditionPrompt(date)}`, 4096);
+  const mainRaw = await generateGeminiResponse(
+    `${searchContext}\n\n${buildMainEditionPrompt(date, recentHeadlines)}`,
+    4096
+  );
   const mainEdition = parseModelJsonValue(mainRaw, "object") as Record<string, unknown>;
   const leadTitle = (mainEdition.headline as { title?: unknown } | undefined)?.title;
 
@@ -96,7 +109,7 @@ ${sectionList}
 Rules:
 - Every story must cover a DIFFERENT news event. Return fewer stories rather than repeating an event.
 - Do not repeat the lead story: ${typeof leadTitle === "string" ? leadTitle : "(none)"}
-- summary: 2-3 paragraphs separated by \\n\\n, 150-250 words.
+${formatRecentCoverage(recentHeadlines)}- summary: 2-3 paragraphs separated by \\n\\n, 150-250 words.
 - url: copy the exact URL of the search result you used.`,
     8192
   );

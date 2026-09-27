@@ -6,15 +6,15 @@ Next.js 15 App Router app containing the reader UI, the API routes and the gener
 
 ```text
 app/
-  gazette/[date]/            Edition page, error boundary, social card
-  gazette/[date]/story/[slug]/  Story reader and its social card
+  gazette/[date]/            Edition page, error boundary
+  gazette/[date]/story/[slug]/  Story reader
   archive/                   Searchable archive
   latest/                    Redirect to the newest printed edition
   api/gazette/               Read and generate endpoints
   analytics/                 Private dashboard (client shell; noindex, rendered per request for the CSP nonce)
   api/track/                 Analytics ingestion
   api/analytics/             Dashboard login/session, data, CSV export, storage, rollup
-  sitemap.ts, robots.ts, icon.png, favicon.ico, opengraph-image.tsx
+  sitemap.ts, robots.ts, icon.png, favicon.ico
 middleware.ts                Nonce Content-Security-Policy for /analytics
 components/                  UI (server components unless marked "use client")
   analytics/                 Tracker (mounted in the root layout), dashboard, charts, login, session guard
@@ -27,7 +27,7 @@ lib/
   db.ts, schema.ts           Drizzle + Neon
   analytics/                 Events schema, ingestion, visitor hashing, owner sessions,
                              daily aggregation SQL (daily.ts), rollups, dashboard queries
-assets/fonts/                Fonts for the PNG social cards (SIL Open Font License)
+public/og-card.jpg           The social card every page shares (1200×630)
 scripts/                     verify-pipeline.ts, verify-redis.ts, verify-analytics.ts
 ```
 

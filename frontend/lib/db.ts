@@ -234,6 +234,18 @@ export async function saveSearchContext(date: string, blocks: SearchTopicBlock[]
     .where(lt(searchContexts.date, sql`${date}::date - ${SEARCH_CONTEXT_KEEP_DAYS}::int`));
 }
 
+/** Lead and story headlines of the editions from the `days` days before `date`, newest first. */
+export async function getRecentHeadlines(date: string, days: number): Promise<string[]> {
+  const db = getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({ content: editions.content })
+    .from(editions)
+    .where(and(lt(editions.date, date), sql`${editions.date} >= ${date}::date - ${days}::int`))
+    .orderBy(desc(editions.date));
+  return rows.flatMap(({ content }) => [content.headline.title, ...content.stories.map((story) => story.headline)]);
+}
+
 const leadTitle = sql<string>`${editions.content}->'headline'->>'title'`;
 const leadDeck = sql<string>`${editions.content}->'headline'->>'deck'`;
 const leadCategory = sql<string>`${editions.content}->'headline'->>'category'`;

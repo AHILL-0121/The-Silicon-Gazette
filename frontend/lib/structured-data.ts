@@ -1,6 +1,6 @@
 import { formatDisplayDate } from "./date";
 import { CATEGORY_LABELS, excerpt, type EditionView, type StoryView } from "./edition-view";
-import { absoluteUrl, SITE_DESCRIPTION, SITE_NAME, siteUrl } from "./site";
+import { absoluteUrl, SITE_DESCRIPTION, SITE_NAME, SOCIAL_IMAGE, siteUrl } from "./site";
 import type { EditionRecord } from "./types";
 
 /** schema.org structured data for search engines (JSON-LD). */
@@ -58,7 +58,7 @@ function headline(text: string) {
 export function editionGraph(edition: EditionRecord, view: EditionView) {
   const path = `/gazette/${edition.date}`;
   const displayDate = formatDisplayDate(edition.date);
-  const image = absoluteUrl(`${path}/opengraph-image`);
+  const image = absoluteUrl(SOCIAL_IMAGE.url);
   return {
     "@context": "https://schema.org",
     "@graph": [
@@ -124,7 +124,7 @@ export function storyGraph(edition: EditionRecord, story: StoryView, sectionLabe
         articleSection: sectionLabel,
         datePublished: edition.generated_at,
         dateModified: edition.generated_at,
-        image: [absoluteUrl(`${story.href}/opengraph-image`)],
+        image: [absoluteUrl(SOCIAL_IMAGE.url)],
         url,
         mainEntityOfPage: { "@type": "WebPage", "@id": url },
         wordCount: story.summary.split(/\s+/).filter(Boolean).length,

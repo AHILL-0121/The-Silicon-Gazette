@@ -6,6 +6,7 @@ import {
   getAdjacentEditionDates,
   getEditionByDate,
   getLatestEditionDate,
+  getRecentHeadlines,
   getSearchContext,
   listEditionStoryIndex,
   listEditionSummariesPage,
@@ -74,6 +75,22 @@ async function loadNewsContext(date: string): Promise<{ context: SearchContext; 
   return { context, reused: false };
 }
 
+/**
+ * Two days, not more: every headline is sent with each of the ~7 model calls,
+ * and Groq's on_demand tier allows 8,000 tokens per minute.
+ */
+const RECENT_COVERAGE_DAYS = 2;
+
+/** Headlines the models should not repeat. Losing them must not stop the paper. */
+async function loadRecentHeadlines(date: string): Promise<string[]> {
+  try {
+    return await getRecentHeadlines(date, RECENT_COVERAGE_DAYS);
+  } catch (error) {
+    logServerError("recent_headlines.read_failed", error, { date });
+    return [];
+  }
+}
+
 async function runPipeline(date: string, budget: { used: number; limit: number }): Promise<EditionRecord> {
   const start = Date.now();
   // Search once and reuse the results for the fallback provider. Without
@@ -91,12 +108,13 @@ async function runPipeline(date: string, budget: { used: number; limit: number }
     searchContext.blocks.flatMap((block) => block.results.map((result) => result.url))
   );
   const searchMs = Date.now() - start;
+  const recentHeadlines = await loadRecentHeadlines(date);
   let fallbackReason: string | undefined;
 
   let raw: RawEdition;
   let model: string;
   try {
-    raw = await generateGazette(date, searchContext.serialized);
+    raw = await generateGazette(date, searchContext.serialized, recentHeadlines);
     model = getGroqModelName();
     normalizeEdition(raw, { allowedUrls });
   } catch (groqError) {
@@ -110,7 +128,7 @@ async function runPipeline(date: string, budget: { used: number; limit: number }
     }
     fallbackReason = groqError instanceof Error ? groqError.message : String(groqError);
     try {
-      raw = await generateGazetteViaGemini(date, searchContext.serialized);
+      raw = await generateGazetteViaGemini(date, searchContext.serialized, recentHeadlines);
     } catch (geminiError) {
       // Name both failures so the alert shows why Groq failed, not just the fallback.
       const geminiReason = geminiError instanceof Error ? geminiError.message : String(geminiError);

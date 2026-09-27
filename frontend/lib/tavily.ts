@@ -2,11 +2,41 @@ import type { SearchContext, SearchResult, SearchTopicBlock } from "./types";
 
 const TAVILY_BASE = "https://api.tavily.com";
 
-const TOPIC_QUERIES: Array<{ topic: "AI" | "TECH" | "OPEN SOURCE"; query: string }> = [
-  { topic: "AI", query: "top AI and machine learning news today" },
-  { topic: "TECH", query: "top tech startup and software news today" },
-  { topic: "OPEN SOURCE", query: "trending open source GitHub repositories today" }
+/**
+ * Tavily only applies `days` to `topic: "news"`; a general search ignores it
+ * and returns evergreen section pages whose cached text barely changes, so
+ * the same stories came back day after day. The open-source block stays on
+ * general search: the repo watch needs GitHub pages, which news search rarely
+ * returns, and an edition with fewer than 3 repos is rejected.
+ */
+const TOPIC_QUERIES: Array<{ topic: "AI" | "TECH" | "OPEN SOURCE"; query: string; searchTopic: "news" | "general" }> = [
+  { topic: "AI", query: "top AI and machine learning news today", searchTopic: "news" },
+  { topic: "TECH", query: "top tech startup and software news today", searchTopic: "news" },
+  { topic: "OPEN SOURCE", query: "trending open source GitHub repositories today", searchTopic: "general" }
 ];
+
+/** Path segments that mark a listing page rather than an article. */
+const LISTING_SEGMENTS = new Set([
+  "category", "categories", "tag", "tags", "topic", "topics", "section", "sections", "author", "authors"
+]);
+
+/**
+ * True for a site's homepage or section page (reuters.com/technology,
+ * techcrunch.com/category/ai). Their snippets are stale snapshots, not today's
+ * news. Article slugs have several words, so a single short segment counts
+ * as a section.
+ */
+export function isListingPage(url: string): boolean {
+  let segments: string[];
+  try {
+    segments = new URL(url).pathname.split("/").filter(Boolean);
+  } catch {
+    return true;
+  }
+  if (segments.length === 0) return true;
+  if (segments.some((segment) => LISTING_SEGMENTS.has(segment.toLowerCase()))) return true;
+  return segments.length === 1 && segments[0].split("-").length < 5;
+}
 
 /**
  * A Tavily error response. 401/403 (bad key) and 432/433 (plan or pay-as-you-go
@@ -64,7 +94,7 @@ async function fetchWithRetry(
   throw lastError;
 }
 
-async function searchTopic(query: string): Promise<SearchResult[]> {
+async function searchTopic(query: string, searchTopic: "news" | "general"): Promise<SearchResult[]> {
   if (!process.env.TAVILY_API_KEY) {
     throw new Error("TAVILY_API_KEY is not configured");
   }
@@ -79,6 +109,7 @@ async function searchTopic(query: string): Promise<SearchResult[]> {
       },
       body: JSON.stringify({
         query,
+        topic: searchTopic,
         search_depth: "basic",
         max_results: 5,
         include_answer: false,
@@ -89,7 +120,10 @@ async function searchTopic(query: string): Promise<SearchResult[]> {
   );
 
   const payload = (await response.json()) as { results?: SearchResult[] };
-  return payload.results ?? [];
+  const results = payload.results ?? [];
+  // GitHub listing pages (/trending, /topics/...) are how the repo watch finds
+  // repos, so the listing filter only applies to news results.
+  return searchTopic === "news" ? results.filter((result) => !isListingPage(result.url)) : results;
 }
 
 export function serializeSearchContext(blocks: SearchTopicBlock[]): string {
@@ -97,7 +131,8 @@ export function serializeSearchContext(blocks: SearchTopicBlock[]): string {
     .map(({ topic, results }) => {
       const lines = results.map((item) => {
         const snippet = item.content?.slice(0, 300) ?? "";
-        return `- ${item.title}\n  URL: ${item.url}\n  Snippet: ${snippet}`;
+        const published = item.published_date ? `\n  Published: ${item.published_date}` : "";
+        return `- ${item.title}\n  URL: ${item.url}${published}\n  Snippet: ${snippet}`;
       });
       return `=== ${topic} ===\n${lines.join("\n")}`;
     })
@@ -106,8 +141,8 @@ export function serializeSearchContext(blocks: SearchTopicBlock[]): string {
 
 export async function fetchNewsContext(): Promise<SearchContext> {
   const blocks = await Promise.all(
-    TOPIC_QUERIES.map(async ({ topic, query }) => {
-      const results = await searchTopic(query);
+    TOPIC_QUERIES.map(async ({ topic, query, searchTopic: kind }) => {
+      const results = await searchTopic(query, kind);
       return {
         topic,
         query,

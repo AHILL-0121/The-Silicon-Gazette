@@ -51,7 +51,7 @@ export async function generateMetadata({ searchParams }: { searchParams: SearchP
       description,
       url: "/archive"
     },
-    twitter: twitterCard(`${title} · The Silicon Gazette`, description, "/archive/opengraph-image"),
+    twitter: twitterCard(`${title} · The Silicon Gazette`, description),
     // Search and filter results are for readers, not for the index.
     robots: filtered ? { index: false, follow: true } : undefined
   };
