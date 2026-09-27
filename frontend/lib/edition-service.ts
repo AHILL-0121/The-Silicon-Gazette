@@ -229,7 +229,8 @@ export async function generateEdition(
       });
       // Keep specific reasons (e.g. budget exhausted) so callers can report them.
       if (error instanceof GenerationFailedError) throw error;
-      throw new GenerationFailedError("Generation failed after retry. Press breakdown.");
+      // The cause carries the provider error; the route shows it to trusted callers only.
+      throw new GenerationFailedError("Generation failed after retry. Press breakdown.", { cause: error });
     })
     .finally(() => {
       inflight.delete(date);

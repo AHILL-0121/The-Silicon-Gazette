@@ -11,14 +11,19 @@ export function isGeminiConfigured(): boolean {
 /** Gemini returns 429/5xx under load ("model is experiencing high demand"). */
 const TRANSIENT_STATUS = /Gemini API error: (429|5\d\d)/;
 
+/** "High demand" 503s often clear within seconds; a second, longer wait catches more of them. */
+const RETRY_DELAYS_MS = [5_000, 15_000];
+
 async function generateGeminiResponse(prompt: string, maxTokens: number): Promise<string> {
-  try {
-    return await requestGemini(prompt, maxTokens);
-  } catch (error) {
-    if (!(error instanceof Error) || !TRANSIENT_STATUS.test(error.message)) throw error;
-    logEvent("warn", "gemini.retry", { reason: error.message.slice(0, 120), delayMs: 5000 });
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-    return requestGemini(prompt, maxTokens);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await requestGemini(prompt, maxTokens);
+    } catch (error) {
+      const delayMs = RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined || !(error instanceof Error) || !TRANSIENT_STATUS.test(error.message)) throw error;
+      logEvent("warn", "gemini.retry", { reason: error.message.slice(0, 120), delayMs });
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
   }
 }
 

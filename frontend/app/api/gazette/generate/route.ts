@@ -77,7 +77,10 @@ async function runGeneration(date: string, trusted: boolean, outcome: Generation
     });
   } catch (error) {
     if (error instanceof GenerationFailedError) {
-      return NextResponse.json({ error: error.message }, { status: 503 });
+      // Trusted callers (the workflow log) see the underlying reason; readers
+      // only get the public message.
+      const reason = trusted && error.cause instanceof Error ? error.cause.message.slice(0, 700) : undefined;
+      return NextResponse.json({ error: error.message, ...(reason ? { reason } : {}) }, { status: 503 });
     }
     logServerError("api:generate-edition", error);
     return NextResponse.json({ error: "Generation failed after retry. Press breakdown." }, { status: 503 });

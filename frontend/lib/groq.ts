@@ -72,6 +72,23 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * The on_demand tier allows 8,000 tokens per minute and each call requests
+ * ~2,400, so the sequential section calls hit the per-minute limit mid-run.
+ * Groq names the wait ("Please try again in 11.775s"); short waits are worth
+ * sitting out. Longer ones (daily limits read "in 2m30s") are not.
+ */
+const RATE_LIMIT_MAX_WAIT_MS = Number(process.env.GROQ_RATE_LIMIT_MAX_WAIT_MS ?? 20_000);
+const RATE_LIMIT_MAX_WAITS = 3;
+
+function rateLimitWaitMs(error: unknown): number | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = /try again in (\d+(?:\.\d+)?)s\b/.exec(message);
+  if (!match) return null;
+  const ms = Math.ceil(Number(match[1]) * 1000) + 500;
+  return ms <= RATE_LIMIT_MAX_WAIT_MS ? ms : null;
+}
+
 export function buildSystemPrompt(): string {
   return `You are the editor of The Silicon Gazette, a daily broadsheet for the tech industry.
 Compose today's edition using ONLY the news provided in the search results as source material.
@@ -147,6 +164,7 @@ async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<
   }
 
   let lastError: unknown;
+  let rateLimitWaits = 0;
   for (let keyIndex = 0; keyIndex < apiKeys.length; keyIndex += 1) {
     const groq = new Groq({ apiKey: apiKeys[keyIndex], timeout: GROQ_TIMEOUT_MS, maxRetries: 0 });
     for (let attempt = 0; attempt <= 1; attempt += 1) {
@@ -166,8 +184,18 @@ async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<
       } catch (error) {
         lastError = error;
         if (isRateLimitError(error)) {
+          // Another key may belong to a different organization with its own limit.
           if (keyIndex < apiKeys.length - 1) {
             logEvent("warn", "groq.rate_limited", { switchingToKey: keyIndex + 2, keys: apiKeys.length });
+            break;
+          }
+          // Every key is limited: sit out a short wait, then start again from the first key.
+          const waitMs = rateLimitWaitMs(error);
+          if (waitMs !== null && rateLimitWaits < RATE_LIMIT_MAX_WAITS) {
+            rateLimitWaits += 1;
+            logEvent("warn", "groq.rate_limited_wait", { waitMs, keys: apiKeys.length });
+            await wait(waitMs);
+            keyIndex = -1;
           }
           break;
         }
