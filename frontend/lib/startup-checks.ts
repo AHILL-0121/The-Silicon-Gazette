@@ -144,12 +144,22 @@ export async function runStartupChecks(): Promise<void> {
   }
   startupState.__siliconGazetteStartupChecksRan = true;
 
-  const [db, groq, tavily, gemini] = await Promise.all([
+  const [firstDbCheck, groq, tavily, gemini] = await Promise.all([
     checkDatabaseHealth(),
     checkGroqHealth(),
     checkTavilyHealth(),
     checkGeminiHealth()
   ]);
+
+  let db = firstDbCheck;
+  // A suspended Neon compute can take longer than the query timeout to wake
+  // while this instance is cold-starting too. One retry separates that from
+  // an outage, so a single slow wake-up doesn't page anyone.
+  if (db.configured && !db.connected && /timeout|aborted/i.test(db.detail)) {
+    logStatus("Database", false, `${db.detail} (retrying once)`);
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    db = await checkDatabaseHealth();
+  }
 
   const dbHealthy = db.configured ? db.connected && db.editionsTableExists : true;
   logStatus("Database", dbHealthy, db.detail);
