@@ -26,6 +26,8 @@ import type { ArchivePage, ArchiveQuery, EditionRecord, SearchContext } from "./
 
 export class NoEditionFoundError extends Error {}
 export class GenerationFailedError extends Error {}
+/** Retrying is pointless until the next UTC day, so callers shouldn't. */
+export class BudgetExhaustedError extends GenerationFailedError {}
 
 /** Only try the Gemini fallback if Groq failed early enough to leave it time. */
 const FALLBACK_CUTOFF_MS = Number(process.env.GEMINI_FALLBACK_CUTOFF_MS ?? 150_000);
@@ -179,7 +181,7 @@ async function runLockedPipeline(date: string): Promise<EditionRecord> {
     if (stored) return stored;
     const budget = await claimGenerationRun(date);
     if (!budget.allowed) {
-      throw new GenerationFailedError(`Daily generation budget exhausted (${budget.used}/${budget.limit}).`);
+      throw new BudgetExhaustedError(`Daily generation budget exhausted (${budget.used}/${budget.limit}).`);
     }
     return await runPipeline(date, budget);
   } finally {

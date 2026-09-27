@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { trackGenerateRequest } from "@/lib/analytics/ingest";
 import { compareEditionDate, isValidEditionDate, toEditionDate } from "@/lib/date";
 import {
+  BudgetExhaustedError,
   EDITIONS_TAG,
   GenerationFailedError,
   editionTag,
@@ -76,6 +77,11 @@ async function runGeneration(date: string, trusted: boolean, outcome: Generation
       latency_ms: result.edition.latency_ms
     });
   } catch (error) {
+    // 409, not 503: curl --retry (and other clients) retry 503s, and every
+    // refused retry still counts against the budget.
+    if (error instanceof BudgetExhaustedError) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
     if (error instanceof GenerationFailedError) {
       // Trusted callers (the workflow log) see the underlying reason; readers
       // only get the public message.
