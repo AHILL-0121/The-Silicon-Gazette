@@ -254,9 +254,12 @@ export function normalizeEditionCandidate(
     if (!name || repos.some((existing) => existing.name.toLowerCase() === name.toLowerCase())) {
       continue;
     }
+    // A placeholder like "—" or "N/A" would fail the schema's 5-character
+    // minimum and reject the whole edition, so it gets the default too.
+    const description = textValue(row.description);
     repos.push({
       name,
-      description: truncate(textValue(row.description, "Repository gaining attention on GitHub."), 200),
+      description: truncate(description.length >= 5 ? description : "Repository gaining attention on GitHub.", 200),
       stars: normalizeStars(row.stars),
       language: normalizeLanguage(row.language)
     });
