@@ -53,7 +53,8 @@ export const metadata: Metadata = {
     description: SITE_DESCRIPTION,
     url: "/"
   },
-  twitter: twitterCard(SITE_NAME, SITE_DESCRIPTION)
+  twitter: twitterCard(SITE_NAME, SITE_DESCRIPTION),
+  verification: { google: "rxzsqvGPBeVff_3pXJ2EEKPBVdR4X72IUB1HJNyAxbA" }
 };
 
 export const viewport: Viewport = {
