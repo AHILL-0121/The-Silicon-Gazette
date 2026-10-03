@@ -130,6 +130,16 @@ function normalizeStars(value: unknown): string {
   return truncate(raw, 32);
 }
 
+/**
+ * A placeholder like "—" or "-" would fail the schema's 2-character minimum
+ * and reject the whole edition (2026-10-03), so it gets the default instead.
+ */
+function normalizeSource(value: unknown): string {
+  const raw = textValue(value);
+  if (raw.length < 2 || UNKNOWN_VALUES.test(raw)) return "Newswire";
+  return truncate(raw, 80);
+}
+
 function normalizeLanguage(value: unknown): string {
   const raw = textValue(value);
   if (!raw || UNKNOWN_VALUES.test(raw)) return "Unknown";
@@ -240,7 +250,7 @@ export function normalizeEditionCandidate(
         headline: truncate(textValue(row.headline), 160),
         summary: truncate(textValue(row.summary), 4000),
         category: normalizeCategory(row.category),
-        source: truncate(textValue(row.source, "Newswire"), 80),
+        source: normalizeSource(row.source),
         url: normalizeSourceUrl(row.url, options.allowedUrls)
       };
     })
@@ -271,7 +281,7 @@ export function normalizeEditionCandidate(
       deck: truncate(textValue(rawHeadline.deck), 300),
       body: headlineBody,
       category: normalizeCategory(rawHeadline.category),
-      source: truncate(textValue(rawHeadline.source, "Newswire"), 80),
+      source: normalizeSource(rawHeadline.source),
       url: normalizeSourceUrl(rawHeadline.url, options.allowedUrls)
     },
     stories: dedupeStories(stories, { headline: headlineTitle, summary: headlineBody }).slice(0, MAX_STORIES),

@@ -16,6 +16,22 @@ export function dailyGenerationLimit(): number {
 
 const localCounts = new Map<string, number>();
 
+function budgetKey(day: string): string {
+  return `silicon-gazette-budget:${day}`;
+}
+
+/**
+ * Runs claimed so far today (UTC), read without claiming one. `used` is null
+ * when Redis isn't configured: the per-instance fallback count isn't shared.
+ */
+export async function getGenerationBudgetUsage(): Promise<{ used: number | null; limit: number }> {
+  const limit = dailyGenerationLimit();
+  const redis = getRedis();
+  if (!redis) return { used: null, limit };
+  const used = await redis.get<number>(budgetKey(toEditionDate()));
+  return { used: Number(used ?? 0), limit };
+}
+
 export interface BudgetResult {
   allowed: boolean;
   used: number;
@@ -31,7 +47,7 @@ export interface BudgetResult {
 export async function claimGenerationRun(date: string): Promise<BudgetResult> {
   const limit = dailyGenerationLimit();
   const day = toEditionDate();
-  const key = `silicon-gazette-budget:${day}`;
+  const key = budgetKey(day);
 
   let used: number;
   let allowed: boolean;

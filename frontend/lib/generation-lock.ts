@@ -22,6 +22,16 @@ export type LockResult =
 
 type LockClient = Pick<Redis, "set" | "eval">;
 
+function lockKey(date: string): string {
+  return `silicon-gazette-lock:${date}`;
+}
+
+/** Whether a generation run for `date` holds the lock right now; null without Redis. */
+export async function isGenerationLocked(date: string, redis: Pick<Redis, "exists"> | null = getRedis()): Promise<boolean | null> {
+  if (!redis) return null;
+  return (await redis.exists(lockKey(date))) > 0;
+}
+
 /**
  * Cross-instance lock for generating one date. In-process promise sharing only
  * covers a single server instance; serverless platforms run many, so without
@@ -33,7 +43,7 @@ export async function acquireGenerationLock(
 ): Promise<LockResult> {
   if (!redis) return { status: "unavailable" };
 
-  const key = `silicon-gazette-lock:${date}`;
+  const key = lockKey(date);
   const token = randomUUID();
   try {
     const acquired = await redis.set(key, token, { nx: true, px: LOCK_TTL_MS });
