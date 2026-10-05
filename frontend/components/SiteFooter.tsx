@@ -1,5 +1,9 @@
 import Link from "next/link";
 
+import { SITE_DESCRIPTION, SITE_NAME } from "@/lib/site";
+
+import { ShareMenu } from "./ShareMenu";
+
 /** The one site-wide footer (the page's only contentinfo landmark). */
 export function SiteFooter() {
   return (
@@ -10,6 +14,16 @@ export function SiteFooter() {
             The <em className="text-signal">Silicon</em> Gazette
           </p>
           <p className="mt-3 max-w-sm font-serif text-lg italic text-ink-soft">All the code that&apos;s fit to print.</p>
+          {/* Always the homepage, whichever page the footer is on. */}
+          <ShareMenu
+            title={SITE_NAME}
+            text={SITE_DESCRIPTION}
+            url="/"
+            placement="footer"
+            side="top"
+            label="Share the Gazette"
+            className="btn mt-6"
+          />
         </div>
         <nav aria-label="Footer">
           <p className="label mb-4">Read</p>

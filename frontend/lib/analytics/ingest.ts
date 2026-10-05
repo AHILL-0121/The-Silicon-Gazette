@@ -21,6 +21,9 @@ export interface EventRow {
     utmSource?: string | null;
     utmMedium?: string | null;
     utmCampaign?: string | null;
+    inApp?: string | null;
+    sourceChannel?: string | null;
+    sourcePlatform?: string | null;
     country?: string | null;
     device: string;
     viewportW?: number | null;
@@ -47,6 +50,9 @@ export function insertEventsAfter(rows: EventRow[]): void {
                     utmSource: r.utmSource ?? null,
                     utmMedium: r.utmMedium ?? null,
                     utmCampaign: r.utmCampaign ?? null,
+                    inApp: r.inApp ?? null,
+                    sourceChannel: r.sourceChannel ?? null,
+                    sourcePlatform: r.sourcePlatform ?? null,
                     country: r.country ?? null,
                     device: r.device,
                     viewportW: r.viewportW ?? null,
@@ -110,6 +116,9 @@ export async function insertEvents(rows: EventRow[]): Promise<void> {
                 utmSource: r.utmSource ?? null,
                 utmMedium: r.utmMedium ?? null,
                 utmCampaign: r.utmCampaign ?? null,
+                inApp: r.inApp ?? null,
+                sourceChannel: r.sourceChannel ?? null,
+                sourcePlatform: r.sourcePlatform ?? null,
                 country: r.country ?? null,
                 device: r.device,
                 viewportW: r.viewportW ?? null,

@@ -3,8 +3,8 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { logEvent } from "@/lib/logger";
 
-import { rawDimDaily, rawEventDaily, rawPageDaily, rawSessionDaily } from "./daily";
-import { dailyDimStats, dailyEventStats, dailyPageStats, dailySessionStats } from "./schema";
+import { rawDimDaily, rawEventDaily, rawPageDaily, rawSessionDaily, rawSourceDaily } from "./daily";
+import { dailyDimStats, dailyEventStats, dailyPageStats, dailySessionStats, dailySourceStats } from "./schema";
 
 /**
  * Idempotent daily aggregation: delete then insert every rollup table for one
@@ -20,6 +20,7 @@ export async function rollupDay(day: string): Promise<void> {
         db.delete(dailyEventStats).where(eq(dailyEventStats.day, day)),
         db.delete(dailyDimStats).where(eq(dailyDimStats.day, day)),
         db.delete(dailySessionStats).where(eq(dailySessionStats.day, day)),
+        db.delete(dailySourceStats).where(eq(dailySourceStats.day, day)),
         db.execute(sql`
       INSERT INTO daily_page_stats (day, path, page_type, edition_date, story_slug, views, visitors, sessions, completions, shares)
       ${rawPageDaily(day, day)}`),
@@ -29,6 +30,9 @@ export async function rollupDay(day: string): Promise<void> {
         db.execute(sql`
       INSERT INTO daily_dim_stats (day, dim, value, views, visitors)
       ${rawDimDaily(day, day)}`),
+        db.execute(sql`
+      INSERT INTO daily_source_stats (day, channel, platform, medium, campaign, sessions, visitors, views, story_sessions, complete_sessions, share_sessions)
+      ${rawSourceDaily(day, day)}`),
         // Always writes one row, which marks the day as rolled up.
         db.execute(sql`
       INSERT INTO daily_session_stats (day, views, visitors, sessions, story_sessions, complete_sessions, open_sessions, deep_sessions, share_sessions)
@@ -62,7 +66,8 @@ export async function storageReport(): Promise<StorageReport> {
     SELECT pg_database_size(current_database())::bigint AS database_bytes,
            pg_total_relation_size('events')::bigint AS events_bytes,
            (pg_total_relation_size('daily_page_stats') + pg_total_relation_size('daily_event_stats')
-             + pg_total_relation_size('daily_dim_stats') + pg_total_relation_size('daily_session_stats'))::bigint AS rollup_bytes,
+             + pg_total_relation_size('daily_dim_stats') + pg_total_relation_size('daily_session_stats')
+             + pg_total_relation_size('daily_source_stats'))::bigint AS rollup_bytes,
            -- Planner estimate (cheap); exact count only before the first ANALYZE (-1).
            (SELECT CASE WHEN reltuples < 0 THEN (SELECT COUNT(*) FROM events) ELSE reltuples END
               FROM pg_class WHERE relname = 'events')::bigint AS event_rows

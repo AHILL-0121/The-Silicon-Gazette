@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { KpiTile, LineChart, BarList, Funnel } from "./charts";
+import { LinkBuilder, SourcesSection, type SourcesData } from "./Sources";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,8 +23,8 @@ interface EventsData { counts: EventCount[]; funnel: FunnelStep[]; search: Searc
 interface TimeseriesPoint { t: string; views: number; visitors: number }
 interface StorageData { databaseBytes: number; eventsBytes: number; rollupBytes: number; eventRows: number; limitBytes: number; usedPct: number; warning: boolean }
 
-type TopKind = "editions" | "stories" | "referrers" | "countries" | "devices";
-const TOP_KINDS: TopKind[] = ["editions", "stories", "referrers", "countries", "devices"];
+type TopKind = "editions" | "stories" | "countries" | "devices";
+const TOP_KINDS: TopKind[] = ["editions", "stories", "countries", "devices"];
 
 // ---------------------------------------------------------------------------
 // Range options
@@ -165,6 +166,10 @@ export function Dashboard({ token, onLogout }: DashboardProps) {
     const [eventsData, setEventsData] = useState<EventsData | null>(null);
     const [eventsError, setEventsError] = useState(false);
 
+    // --- Sources ---
+    const [sources, setSources] = useState<SourcesData | null>(null);
+    const [sourcesError, setSourcesError] = useState(false);
+
     // --- Storage ---
     const [storage, setStorage] = useState<StorageData | null>(null);
     const [storageError, setStorageError] = useState(false);
@@ -174,7 +179,7 @@ export function Dashboard({ token, onLogout }: DashboardProps) {
     const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
     // --- Export ---
-    const [exporting, setExporting] = useState<"events" | "daily" | null>(null);
+    const [exporting, setExporting] = useState<"events" | "daily" | "sources" | null>(null);
     const [exportError, setExportError] = useState<string | null>(null);
 
     const load401 = useCallback(
@@ -194,11 +199,12 @@ export function Dashboard({ token, onLogout }: DashboardProps) {
         setTimeseriesError(false);
         setTopErrors({});
         setEventsError(false);
+        setSourcesError(false);
         setStorageError(false);
 
         const q = `from=${from}&to=${to}`;
 
-        const [sumRes, tsRes, topRes, evRes, stRes] = await Promise.all([
+        const [sumRes, tsRes, topRes, evRes, srcRes, stRes] = await Promise.all([
             apiFetch(`/api/analytics/summary?${q}`, token).then(
                 (value) => ({ ok: true as const, value }),
                 (reason: Error) => ({ ok: false as const, reason })
@@ -209,6 +215,10 @@ export function Dashboard({ token, onLogout }: DashboardProps) {
             ),
             Promise.allSettled(TOP_KINDS.map((kind) => apiFetch(`/api/analytics/top?${q}&kind=${kind}`, token))),
             apiFetch(`/api/analytics/events?${q}`, token).then(
+                (value) => ({ ok: true as const, value }),
+                (reason: Error) => ({ ok: false as const, reason })
+            ),
+            apiFetch(`/api/analytics/sources?${q}`, token).then(
                 (value) => ({ ok: true as const, value }),
                 (reason: Error) => ({ ok: false as const, reason })
             ),
@@ -240,6 +250,9 @@ export function Dashboard({ token, onLogout }: DashboardProps) {
         if (evRes.ok) setEventsData(evRes.value as EventsData);
         else if (!load401(evRes.reason)) setEventsError(true);
 
+        if (srcRes.ok) setSources(srcRes.value as SourcesData);
+        else if (!load401(srcRes.reason)) setSourcesError(true);
+
         if (stRes.ok) setStorage(stRes.value as StorageData);
         else if (!load401(stRes.reason)) setStorageError(true);
     }, [token, from, to, granularity, load401]);
@@ -267,7 +280,7 @@ export function Dashboard({ token, onLogout }: DashboardProps) {
     }, [token, load401]);
 
     /** CSV download through fetch, so the Bearer token is sent (a plain link can't send it). */
-    async function downloadCsv(type: "events" | "daily") {
+    async function downloadCsv(type: "events" | "daily" | "sources") {
         setExporting(type);
         setExportError(null);
         try {
@@ -405,12 +418,23 @@ export function Dashboard({ token, onLogout }: DashboardProps) {
                     </section>
                 </div>
 
-                {/* Referrers + Countries + Devices */}
-                <div className="grid gap-6 md:grid-cols-3">
-                    <section aria-labelledby="top-referrers-heading" className="rounded-2xl border border-rule bg-surface p-5">
-                        <h2 id="top-referrers-heading" className="font-display text-lg mb-4">Referrers</h2>
-                        {topList("referrers", 4)}
-                    </section>
+                {/* Sources */}
+                <section aria-labelledby="sources-heading" className="rounded-2xl border border-rule bg-surface p-5 sm:p-6">
+                    <h2 id="sources-heading" className="font-display text-xl mb-1">Sources</h2>
+                    <p className="mb-5 text-xs text-muted">
+                        Where sessions came from: tagged links first, then the referring site, then the app&apos;s in-app browser. A session counts for the source of its first page view.
+                    </p>
+                    {sourcesError ? <CardError onRetry={loadAll} />
+                        : sources ? <SourcesSection data={sources} />
+                            : <SectionSkeleton rows={6} />}
+                    <div className="mt-8 border-t border-rule pt-5">
+                        <h3 className="font-display text-lg mb-1">Link builder</h3>
+                        <LinkBuilder />
+                    </div>
+                </section>
+
+                {/* Countries + Devices */}
+                <div className="grid gap-6 md:grid-cols-2">
                     <section aria-labelledby="top-countries-heading" className="rounded-2xl border border-rule bg-surface p-5">
                         <h2 id="top-countries-heading" className="font-display text-lg mb-4">Countries</h2>
                         {topList("countries", 4)}
@@ -523,6 +547,9 @@ export function Dashboard({ token, onLogout }: DashboardProps) {
                         </button>
                         <button type="button" className="btn" disabled={exporting !== null} onClick={() => downloadCsv("daily")}>
                             {exporting === "daily" ? "Preparing…" : "↓ Daily page stats CSV"}
+                        </button>
+                        <button type="button" className="btn" disabled={exporting !== null} onClick={() => downloadCsv("sources")}>
+                            {exporting === "sources" ? "Preparing…" : "↓ Daily sources CSV"}
                         </button>
                     </div>
                     {exportError && (

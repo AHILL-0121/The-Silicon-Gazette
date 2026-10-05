@@ -89,6 +89,43 @@ async function pureChecks() {
         trackBatchSchema.safeParse({ events: Array(10).fill(pageview), path: "/", sessionId: "s" }).success &&
         !trackBatchSchema.safeParse({ events: Array(11).fill(pageview), path: "/", sessionId: "s" }).success
     );
+
+    const { classifySource, inAppPlatform, previewBotPlatform } = await import("../lib/analytics/sources");
+    const sourceCases: [Parameters<typeof classifySource>[0], string, string][] = [
+        [{}, "direct", "Direct"],
+        [{ referrerHost: "t.co" }, "social", "X"],
+        [{ referrerHost: "lm.facebook.com" }, "social", "Facebook"],
+        [{ referrerHost: "google.co.in" }, "search", "Google"],
+        [{ referrerHost: "mail.google.com" }, "email", "Gmail"],
+        [{ referrerHost: "gemini.google.com" }, "ai", "Gemini"],
+        [{ referrerHost: "news.ycombinator.com" }, "community", "Hacker News"],
+        [{ referrerHost: "com.linkedin.android" }, "social", "LinkedIn"],
+        [{ referrerHost: "blog.example.net" }, "referral", "blog.example.net"],
+        [{ utmSource: "WhatsApp", utmMedium: "share", referrerHost: "t.co" }, "shares", "WhatsApp"],
+        [{ utmSource: "hn" }, "community", "Hacker News"],
+        [{ utmSource: "linkedin", utmMedium: "cpc" }, "paid", "LinkedIn"],
+        [{ utmSource: "my-podcast" }, "campaign", "my-podcast"],
+        [{ inApp: "Instagram" }, "social", "Instagram"]
+    ];
+    const wrong = sourceCases
+        .map(([input, channel, platform]) => ({ input, want: `${channel}/${platform}`, got: classifySource(input) }))
+        .filter(({ want, got }) => `${got.channel}/${got.platform}` !== want)
+        .map(({ input, want, got }) => `${JSON.stringify(input)} → ${got.channel}/${got.platform}, want ${want}`);
+    record("sources: classification table", wrong.length === 0, wrong.join(" | "));
+
+    record(
+        "sources: in-app browsers detected",
+        inAppPlatform("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 340.0.0.22.109") === "Instagram" &&
+        inAppPlatform("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 [FBAN/FBIOS;FBAV/470.0.0.0]") === "Facebook" &&
+        inAppPlatform(humans[0]) === null
+    );
+    record(
+        "sources: preview bots told apart",
+        previewBotPlatform("TelegramBot (like TwitterBot)") === "Telegram" &&
+        previewBotPlatform("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_1) AppleWebKit/601.2.4 (KHTML, like Gecko) Version/9.0.1 Safari/601.2.4 facebookexternalhit/1.1 Facebot Twitterbot/1.0") === "iMessage" &&
+        previewBotPlatform("WhatsApp/2.23.20.0 A") === "WhatsApp" &&
+        previewBotPlatform(humans[0]) === null
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +236,8 @@ async function rollupChecks(day: string) {
         { name: "daily_page_stats", order: "path", raw: daily.rawPageDaily },
         { name: "daily_event_stats", order: "name, key", raw: daily.rawEventDaily },
         { name: "daily_dim_stats", order: "dim, value", raw: daily.rawDimDaily },
-        { name: "daily_session_stats", order: "day", raw: daily.rawSessionDaily }
+        { name: "daily_session_stats", order: "day", raw: daily.rawSessionDaily },
+        { name: "daily_source_stats", order: "channel, platform, medium, campaign", raw: daily.rawSourceDaily }
     ];
     const snapshot = async () => {
         const out: Record<string, string> = {};

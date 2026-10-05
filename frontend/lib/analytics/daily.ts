@@ -46,7 +46,8 @@ export function rawEventDaily(from: string, to: string): SQL {
              visitor_hash,
              COALESCE(
                CASE name
-                 WHEN 'share' THEN props->>'method'
+                 WHEN 'share' THEN
+                   COALESCE(props->>'method', '') || COALESCE('|' || (props->>'placement'), '')
                  WHEN 'read_depth' THEN props->>'depth'
                  WHEN 'theme_toggle' THEN props->>'to'
                  WHEN 'palette_open' THEN props->>'via'
@@ -55,6 +56,7 @@ export function rawEventDaily(from: string, to: string): SQL {
                    CASE WHEN (props->>'results')::int = 0 THEN 'zero' ELSE 'hit' END
                  WHEN 'edition_nav' THEN props->>'dir'
                  WHEN 'generate_request' THEN props->>'status'
+                 WHEN 'link_preview' THEN props->>'platform'
                END,
                ''
              ) AS key
@@ -121,6 +123,50 @@ export function rawSessionDaily(from: string, to: string): SQL {
     ) s ON s.day = g.day`;
 }
 
+/**
+ * Columns: day, channel, platform, medium, campaign, sessions, visitors, views,
+ * story_sessions, complete_sessions, share_sessions. Every session with a
+ * pageview that day, credited to the source of its first pageview ever (a
+ * session can start before midnight). Sessions here sum to daily_session_stats.
+ */
+export function rawSourceDaily(from: string, to: string): SQL {
+    return sql`
+    SELECT s.day,
+           COALESCE(l.source_channel, 'direct') AS channel,
+           COALESCE(l.source_platform, 'Direct') AS platform,
+           COALESCE(l.utm_medium, '') AS medium,
+           COALESCE(l.utm_campaign, '') AS campaign,
+           COUNT(*)::int AS sessions,
+           COUNT(DISTINCT s.visitor_hash)::int AS visitors,
+           SUM(s.views)::int AS views,
+           (COUNT(*) FILTER (WHERE s.story))::int AS story_sessions,
+           (COUNT(*) FILTER (WHERE s.complete))::int AS complete_sessions,
+           (COUNT(*) FILTER (WHERE s.shared))::int AS share_sessions
+    FROM (
+      SELECT ${EVENT_DAY} AS day,
+             session_id,
+             MIN(visitor_hash) FILTER (WHERE name = 'pageview') AS visitor_hash,
+             (COUNT(*) FILTER (WHERE name = 'pageview'))::int AS views,
+             BOOL_OR(name = 'pageview' AND page_type = 'story') AS story,
+             BOOL_OR(name = 'read_complete') AS complete,
+             BOOL_OR(name = 'share') AS shared
+      FROM events
+      WHERE ${tsInDays(from, to)}
+      GROUP BY 1, 2
+      HAVING COUNT(*) FILTER (WHERE name = 'pageview') > 0
+    ) s
+    LEFT JOIN LATERAL (
+      SELECT source_channel, source_platform, utm_medium, utm_campaign
+      FROM events e
+      WHERE e.session_id = s.session_id
+        AND e.name = 'pageview'
+        AND e.ts < ((s.day + 1)::timestamp AT TIME ZONE 'UTC')
+      ORDER BY e.ts, e.id
+      LIMIT 1
+    ) l ON true
+    GROUP BY 1, 2, 3, 4, 5`;
+}
+
 // ---------------------------------------------------------------------------
 // Merging rollups with raw events
 // ---------------------------------------------------------------------------
@@ -132,20 +178,27 @@ export function rawSessionDaily(from: string, to: string): SQL {
 const ROLLED_DAYS = sql`SELECT day FROM daily_session_stats
   WHERE day <= (now() AT TIME ZONE 'UTC')::date - 2`;
 
-export type RollupTable = "daily_page_stats" | "daily_event_stats" | "daily_dim_stats" | "daily_session_stats";
+export type RollupTable =
+    | "daily_page_stats"
+    | "daily_event_stats"
+    | "daily_dim_stats"
+    | "daily_session_stats"
+    | "daily_source_stats";
 
 const COLUMNS: Record<RollupTable, SQL> = {
     daily_page_stats: sql`day, path, page_type, edition_date, story_slug, views, visitors, sessions, completions, shares`,
     daily_event_stats: sql`day, name, key, count, visitors`,
     daily_dim_stats: sql`day, dim, value, views, visitors`,
-    daily_session_stats: sql`day, views, visitors, sessions, story_sessions, complete_sessions, open_sessions, deep_sessions, share_sessions`
+    daily_session_stats: sql`day, views, visitors, sessions, story_sessions, complete_sessions, open_sessions, deep_sessions, share_sessions`,
+    daily_source_stats: sql`day, channel, platform, medium, campaign, sessions, visitors, views, story_sessions, complete_sessions, share_sessions`
 };
 
 const RAW: Record<RollupTable, (from: string, to: string) => SQL> = {
     daily_page_stats: rawPageDaily,
     daily_event_stats: rawEventDaily,
     daily_dim_stats: rawDimDaily,
-    daily_session_stats: rawSessionDaily
+    daily_session_stats: rawSessionDaily,
+    daily_source_stats: rawSourceDaily
 };
 
 /**

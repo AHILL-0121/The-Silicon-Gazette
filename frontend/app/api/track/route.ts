@@ -7,6 +7,7 @@ import { getRedis } from "@/lib/redis";
 import { insertEventsAfter, type EventRow } from "@/lib/analytics/ingest";
 import { analyticsEventSchema, trackBatchSchema, type AnalyticsEvent } from "@/lib/analytics/events";
 import { visitorHash, isBot, deviceFromUA, referrerHost, pageTypeFromPath, utcDayString, bucketViewport } from "@/lib/analytics/visitor";
+import { classifySource, inAppPlatform, normalizeTag } from "@/lib/analytics/sources";
 import { siteUrl } from "@/lib/site";
 
 export const dynamic = "force-dynamic";
@@ -128,6 +129,7 @@ export async function POST(req: Request) {
     const device = batch.device ?? deviceFromUA(ua, batch.viewportW);
     const viewport = batch.viewportW !== undefined ? bucketViewport(batch.viewportW) : null;
     const siteHost = new URL(site).hostname;
+    const inApp = inAppPlatform(ua);
 
     const rows: EventRow[] = [];
     for (const event of events) {
@@ -138,6 +140,14 @@ export async function POST(req: Request) {
             ? { pageType: "404" as const, editionDate: null, storySlug: null }
             : pageTypeFromPath(path);
 
+        const referrer = event.referrer ? referrerHost(event.referrer, siteHost) : null;
+        const utmSource = normalizeTag(event.utmSource);
+        const utmMedium = normalizeTag(event.utmMedium);
+        // Only pageviews carry a source: a session's first one is its source.
+        const source = event.name === "pageview"
+            ? { inApp, ...classifySource({ utmSource, utmMedium, referrerHost: referrer, inApp }) }
+            : null;
+
         rows.push({
             name: event.name,
             path,
@@ -146,10 +156,13 @@ export async function POST(req: Request) {
             storySlug: info.storySlug,
             visitorHash: hash,
             sessionId: batch.sessionId,
-            referrerHost: event.referrer ? referrerHost(event.referrer, siteHost) : null,
-            utmSource: event.utmSource ?? null,
-            utmMedium: event.utmMedium ?? null,
-            utmCampaign: event.utmCampaign ?? null,
+            referrerHost: referrer,
+            utmSource: utmSource ?? null,
+            utmMedium: utmMedium ?? null,
+            utmCampaign: normalizeTag(event.utmCampaign) ?? null,
+            inApp: source?.inApp ?? null,
+            sourceChannel: source?.channel ?? null,
+            sourcePlatform: source?.platform ?? null,
             country: typeof country === "string" && country.length === 2 ? country : null,
             device,
             viewportW: viewport,

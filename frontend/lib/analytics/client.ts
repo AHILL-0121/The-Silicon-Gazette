@@ -182,11 +182,14 @@ export function markNotFound(path: string): void {
     }
 }
 
+/** Query parameters that tag where a link was posted; `ref` is short for utm_source. */
+const TAG_PARAMS = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "ref"];
+
 function utmParams(): Pick<QueuedEvent, "utmSource" | "utmMedium" | "utmCampaign"> {
     if (typeof window === "undefined") return {};
     const params = new URLSearchParams(window.location.search);
     return {
-        utmSource: params.get("utm_source")?.slice(0, 256) || undefined,
+        utmSource: (params.get("utm_source") || params.get("ref"))?.slice(0, 256) || undefined,
         utmMedium: params.get("utm_medium")?.slice(0, 256) || undefined,
         utmCampaign: params.get("utm_campaign")?.slice(0, 256) || undefined
     };
@@ -217,4 +220,18 @@ export function track(name: string, props: Record<string, unknown> = {}): void {
     } else {
         scheduleFlush();
     }
+}
+
+/**
+ * Removes the tag parameters from the address bar once the landing pageview
+ * has captured them, so a reader who copies the URL doesn't pass on the
+ * original source (a WhatsApp link re-shared on Telegram would count as WhatsApp).
+ */
+export function stripTagParams(): void {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const tagged = TAG_PARAMS.filter((name) => url.searchParams.has(name));
+    if (tagged.length === 0) return;
+    for (const name of tagged) url.searchParams.delete(name);
+    window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
 }

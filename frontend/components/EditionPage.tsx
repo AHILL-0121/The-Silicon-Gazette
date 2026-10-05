@@ -15,7 +15,7 @@ import { MotionDirector } from "./MotionDirector";
 import { RepoCard } from "./RepoCard";
 import { RiseText } from "./RiseText";
 import { SectionNav } from "./SectionNav";
-import { ShareButton } from "./ShareButton";
+import { ShareMenu } from "./ShareMenu";
 import { SiteFooter } from "./SiteFooter";
 import { SiteHeader } from "./SiteHeader";
 import { SplitWords } from "./SplitWords";
@@ -146,7 +146,7 @@ export function EditionPage({ edition, view, previousDate, nextDate }: EditionPa
                   ) : (
                     <span className="label">Source: {lead.sourceLabel}</span>
                   )}
-                  <ShareButton title={`The Silicon Gazette · ${displayDate}`} text={lead.title} label="Share edition" />
+                  <ShareMenu title={`The Silicon Gazette · ${displayDate}`} text={lead.title} label="Share edition" placement="edition" />
                 </div>
               </article>
 

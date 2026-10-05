@@ -175,11 +175,11 @@ export function SessionGuard({ token, onLogout, children }: SessionGuardProps) {
                 </div>
             )}
 
-            {/* Logout button (fixed) */}
+            {/* Logout button (fixed), above the site-wide back-to-top button (bottom-6, 44 px tall) */}
             <button
                 type="button"
                 onClick={handleLogout}
-                className="fixed bottom-4 right-4 z-50 label rounded-full border border-rule bg-surface px-3 py-2 text-ink-soft shadow-md hover:border-ink hover:text-ink transition-colors"
+                className="fixed bottom-20 right-4 sm:right-6 z-50 label rounded-full border border-rule bg-surface px-3 py-2 text-ink-soft shadow-md hover:border-ink hover:text-ink transition-colors"
                 aria-label="Sign out of analytics"
             >
                 Sign out

@@ -35,7 +35,14 @@ const readCompleteProps = z.object({ seconds: z.number().int().nonnegative() });
 const storyOpenProps = z.object({ section: z.string(), position: z.number().int().nonnegative() });
 const repoClickProps = z.object({ repo: z.string() });
 const sourceClickProps = z.object({ host: z.string() });
-const shareProps = z.object({ method: z.enum(["native", "clipboard"]) });
+/** `method` is the share menu target (lib/share.ts); "clipboard" is the pre-menu name for "copy". */
+const shareProps = z.object({
+    method: z.enum([
+        "whatsapp", "x", "linkedin", "facebook", "reddit", "telegram", "bluesky", "threads", "hackernews",
+        "email", "copy", "native", "clipboard"
+    ]),
+    placement: z.enum(["story", "edition", "footer"]).optional()
+});
 const paletteOpenProps = z.object({ via: z.enum(["slash", "ctrl_k", "button"]) });
 const paletteSearchProps = z.object({ results: z.number().int().nonnegative(), chose: z.boolean() });
 const archiveSearchProps = z.object({ results: z.number().int().nonnegative() });

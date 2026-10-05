@@ -1,5 +1,7 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, type NextFetchEvent, type NextRequest } from "next/server";
 
+import { recordLinkPreview } from "@/lib/analytics/previews";
+import { previewBotPlatform } from "@/lib/analytics/sources";
 import { THEME_SCRIPT } from "@/lib/theme-script";
 
 // ---------------------------------------------------------------------------
@@ -20,7 +22,13 @@ function themeScriptHash(): Promise<string> {
     return themeHash;
 }
 
-export async function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest, event: NextFetchEvent) {
+    const { pathname } = request.nextUrl;
+    if (!pathname.startsWith("/analytics")) {
+        recordPreview(request, event);
+        return NextResponse.next();
+    }
+
     const nonce = btoa(crypto.randomUUID());
     const dev = process.env.NODE_ENV === "development";
 
@@ -49,6 +57,19 @@ export async function middleware(request: NextRequest) {
     return response;
 }
 
+/**
+ * Public pages: counts link-preview fetches (lib/analytics/previews) after the
+ * response, without touching it.
+ */
+function recordPreview(request: NextRequest, event: NextFetchEvent): void {
+    if (request.method !== "GET") return;
+    const platform = previewBotPlatform(request.headers.get("user-agent") ?? "");
+    if (!platform) return;
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.headers.get("x-real-ip") ?? "unknown";
+    event.waitUntil(recordLinkPreview(platform, request.nextUrl.pathname, ip));
+}
+
 export const config = {
-    matcher: ["/analytics", "/analytics/:path*"]
+    // Pages only: no API routes, Next.js assets or files with an extension.
+    matcher: ["/((?!api/|_next/|.*\\.[a-zA-Z0-9]+$).*)"]
 };

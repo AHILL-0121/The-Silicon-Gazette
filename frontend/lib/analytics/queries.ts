@@ -251,6 +251,7 @@ export async function queryEvents(fromUtc: string, toUtc: string): Promise<Event
         rows(sql`
       SELECT name, SUM(count)::int AS count, SUM(visitors)::int AS visitors
       FROM (${source("daily_event_stats")}) m
+      WHERE name <> 'link_preview'
       GROUP BY name ORDER BY count DESC, name`),
         rows(sql`
       SELECT COALESCE(SUM(sessions), 0) AS step1,
@@ -309,6 +310,109 @@ export async function queryEvents(fromUtc: string, toUtc: string): Promise<Event
 }
 
 // ---------------------------------------------------------------------------
+// Sources (sessions by where they came from; see lib/analytics/sources)
+// ---------------------------------------------------------------------------
+export interface SourceRow {
+    channel: string;
+    platform: string;
+    sessions: number;
+    visitors: number;
+    views: number;
+    storySessions: number;
+    completeSessions: number;
+    shareSessions: number;
+}
+
+export interface CampaignRow {
+    campaign: string;
+    platform: string;
+    medium: string;
+    sessions: number;
+    storySessions: number;
+    completeSessions: number;
+}
+
+export interface SourcesResult {
+    totalSessions: number;
+    channels: { channel: string; sessions: number; visitors: number }[];
+    platforms: SourceRow[];
+    campaigns: CampaignRow[];
+    /** Share-menu clicks by target and where the menu was (story, edition, footer). */
+    shares: { method: string; placement: string; count: number }[];
+    /** Link-preview fetches by platform: where links were pasted. */
+    previews: { platform: string; count: number }[];
+}
+
+export async function querySources(fromUtc: string, toUtc: string): Promise<SourcesResult> {
+    const source = await sourceFor(fromUtc, toUtc);
+
+    const [channelRows, platformRows, campaignRows, eventRows] = await Promise.all([
+        rows(sql`
+      SELECT channel, SUM(sessions)::int AS sessions, SUM(visitors)::int AS visitors
+      FROM (${source("daily_source_stats")}) m
+      GROUP BY channel ORDER BY sessions DESC, channel`),
+        rows(sql`
+      SELECT channel, platform,
+             SUM(sessions)::int AS sessions, SUM(visitors)::int AS visitors, SUM(views)::int AS views,
+             SUM(story_sessions)::int AS story_sessions, SUM(complete_sessions)::int AS complete_sessions,
+             SUM(share_sessions)::int AS share_sessions
+      FROM (${source("daily_source_stats")}) m
+      GROUP BY channel, platform ORDER BY sessions DESC, platform LIMIT 30`),
+        rows(sql`
+      SELECT campaign, platform, medium,
+             SUM(sessions)::int AS sessions, SUM(story_sessions)::int AS story_sessions,
+             SUM(complete_sessions)::int AS complete_sessions
+      FROM (${source("daily_source_stats")}) m
+      WHERE campaign <> ''
+      GROUP BY campaign, platform, medium ORDER BY sessions DESC, campaign LIMIT 20`),
+        rows(sql`
+      SELECT name, key, SUM(count)::int AS count
+      FROM (${source("daily_event_stats")}) m
+      WHERE name IN ('share', 'link_preview')
+      GROUP BY name, key ORDER BY count DESC, key`)
+    ]);
+
+    const channels = channelRows.map((row) => ({
+        channel: String(row.channel ?? ""),
+        sessions: num(row.sessions),
+        visitors: num(row.visitors)
+    }));
+
+    return {
+        totalSessions: channels.reduce((total, c) => total + c.sessions, 0),
+        channels,
+        platforms: platformRows.map((row) => ({
+            channel: String(row.channel ?? ""),
+            platform: String(row.platform ?? ""),
+            sessions: num(row.sessions),
+            visitors: num(row.visitors),
+            views: num(row.views),
+            storySessions: num(row.story_sessions),
+            completeSessions: num(row.complete_sessions),
+            shareSessions: num(row.share_sessions)
+        })),
+        campaigns: campaignRows.map((row) => ({
+            campaign: String(row.campaign ?? ""),
+            platform: String(row.platform ?? ""),
+            medium: String(row.medium ?? ""),
+            sessions: num(row.sessions),
+            storySessions: num(row.story_sessions),
+            completeSessions: num(row.complete_sessions)
+        })),
+        shares: eventRows
+            .filter((row) => row.name === "share")
+            .map((row) => {
+                // Keys are "method|placement"; shares from before the menu have no placement.
+                const [method, placement = ""] = String(row.key ?? "").split("|");
+                return { method: method === "clipboard" ? "copy" : method || "unknown", placement, count: num(row.count) };
+            }),
+        previews: eventRows
+            .filter((row) => row.name === "link_preview")
+            .map((row) => ({ platform: String(row.key || "unknown"), count: num(row.count) }))
+    };
+}
+
+// ---------------------------------------------------------------------------
 // Live (last 30 min, raw)
 // ---------------------------------------------------------------------------
 export interface LiveResult {
@@ -323,7 +427,7 @@ export async function queryLive(): Promise<LiveResult> {
         rows(sql`
       SELECT COUNT(DISTINCT session_id) AS sessions
       FROM events
-      WHERE ts >= ${cutoff}::timestamptz AND name <> 'generate_request'`),
+      WHERE ts >= ${cutoff}::timestamptz AND name NOT IN ('generate_request', 'link_preview')`),
         rows(sql`
       SELECT path, COUNT(DISTINCT session_id) AS sessions
       FROM events
@@ -346,7 +450,7 @@ export async function exportEvents(fromUtc: string, toUtc: string): Promise<Row[
     return rows(sql`
     SELECT ts, name, path, page_type, edition_date, story_slug,
            visitor_hash, session_id, referrer_host, utm_source, utm_medium, utm_campaign,
-           country, device, viewport_w, props
+           in_app, source_channel, source_platform, country, device, viewport_w, props
     FROM events
     WHERE ${tsInDays(fromUtc, toUtc)}
     ORDER BY ts, id`);
@@ -359,4 +463,14 @@ export async function exportDaily(fromUtc: string, toUtc: string): Promise<Row[]
     SELECT day::text AS day, path, page_type, views, visitors, sessions, completions, shares
     FROM (${source("daily_page_stats")}) m
     ORDER BY day, path`);
+}
+
+/** Per-day sessions by source in [from, to], rolled-up and raw days merged. */
+export async function exportSources(fromUtc: string, toUtc: string): Promise<Row[]> {
+    const source = await sourceFor(fromUtc, toUtc);
+    return rows(sql`
+    SELECT day::text AS day, channel, platform, medium, campaign, sessions, visitors, views,
+           story_sessions, complete_sessions, share_sessions
+    FROM (${source("daily_source_stats")}) m
+    ORDER BY day, sessions DESC, platform`);
 }

@@ -6,7 +6,7 @@ import { ReaderControls } from "@/components/ReaderControls";
 import { ScrollReveal } from "@/components/Interactions";
 import { MotionDirector } from "@/components/MotionDirector";
 import { RiseText } from "@/components/RiseText";
-import { ShareButton } from "@/components/ShareButton";
+import { ShareMenu } from "@/components/ShareMenu";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
 import { JsonLd } from "@/components/JsonLd";
@@ -130,7 +130,7 @@ export default async function StoryPage({ params }: PageProps) {
           <div className="mx-auto mt-10 flex max-w-measure flex-wrap items-center justify-between gap-3 border-y border-rule py-3">
             <ReaderControls targetId="story-body" />
             <div className="flex flex-wrap gap-2">
-              <ShareButton title={story.headline} text={excerpt(story.summary, 120)} url={story.href} className="btn px-3.5" />
+              <ShareMenu title={story.headline} text={excerpt(story.summary, 120)} url={story.href} placement="story" className="btn px-3.5" />
               {story.sourceUrl && (
                 <a href={story.sourceUrl} target="_blank" rel="noopener noreferrer" className="btn px-3.5" data-track="source_click" data-track-host={urlHost(story.sourceUrl)}>
                   Source <span aria-hidden="true">↗</span>

@@ -83,7 +83,7 @@ All variables are listed with comments in [`frontend/.env.example`](./frontend/.
 
 ## Analytics
 
-`/analytics` is a private dashboard for the site owner: page views, visitor-days, sessions, read depth and completion, top editions and stories, referrers, countries, devices, interaction events and a funnel, search usage, generation requests, 404s, database size, a live "reading now" count and CSV export.
+`/analytics` is a private dashboard for the site owner: page views, visitor-days, sessions, read depth and completion, top editions and stories, traffic sources, countries, devices, interaction events and a funnel, search usage, generation requests, 404s, database size, a live "reading now" count and CSV export.
 
 **Signing in.** One password (`ANALYTICS_PASSWORD`). There are no cookies: the session token lives in `sessionStorage` and is sent as `Authorization: Bearer`. Sessions are stored (hashed) in Upstash Redis, so the dashboard needs a working Upstash database and refuses logins when Redis is down. You are signed out after 20 minutes without activity (with a warning a minute before) or about 15 seconds after the tab closes; a refresh keeps you signed in. Logins are limited to 5 attempts per 15 minutes per IP. The page is `noindex`, blocked in `robots.txt`, and served with a nonce-based Content-Security-Policy (`middleware.ts`).
 
@@ -91,11 +91,21 @@ All variables are listed with comments in [`frontend/.env.example`](./frontend/.
 - No cookies and no IP addresses are stored. Visitors are counted with a hash of IP + user agent keyed by a secret that changes every UTC day, so the same person can't be linked across days.
 - Search text is never stored, only result counts.
 - Visitors who send Do Not Track or Global Privacy Control, and known bots, are not recorded.
-- Page paths are stored without query strings.
+- Page paths are stored without query strings. For the landing page, the referring site's host name (never the full URL) and any `utm_*` / `ref` tags are kept; the tags are then removed from the address bar.
+- For in-app browsers (Instagram, Facebook, LinkedIn…) only the app's name is stored, not the user agent.
 - Signing in also excludes your own browser; the login page has an "Exclude this browser" link for other browsers.
 - Raw events are kept indefinitely in Neon.
 
 **How data flows.** The browser batches events to `POST /api/track` (a 4 KB and 10-event limit, and 120 requests a minute per IP). A nightly rollup at 00:20 UTC (GitHub Actions, `.github/workflows/analytics-rollup.yml`, with Vercel Cron at 02:00 UTC as a backup) aggregates yesterday into daily tables. The dashboard reads rollups for older days and raw events for the last 24–48 hours, using the same SQL for both, so the numbers match. Days are UTC; visitor and session counts are per day, summed over the range.
+
+**Sources.** Each session is credited to the source of its first page view: a `utm_source` / `ref` tag first, then the referring site, then the app whose in-app browser opened the link, otherwise Direct. `lib/analytics/sources.ts` maps hosts and tags to platforms (Google, LinkedIn, Hacker News, ChatGPT…) and channels (search, social, tech communities, messaging, email, AI assistants, reader shares, paid, campaigns, other sites); add a line there to cover a new platform. The dashboard shows channels, platforms with read and share rates, campaigns, share-menu clicks by platform and button, and a link builder for tagged links. Apps such as WhatsApp, Discord and Signal send no referrer, so their untagged visits count as Direct; the share menu tags every link it creates (`utm_medium=share`), and `middleware.ts` counts the link-preview fetches these apps make when a link is pasted (Link previews, approximate).
+
+After changing the table, or once after adding the source columns, classify past visits and rebuild the rolled-up days:
+
+```powershell
+cd frontend
+npx tsx scripts/backfill-sources.ts --reroll
+```
 
 **Database schema.** `npx drizzle-kit push` creates the `events` and `daily_*` tables along with `editions` and `search_contexts` (each day's Tavily results, kept a week so a retry after a model failure doesn't search again).
 

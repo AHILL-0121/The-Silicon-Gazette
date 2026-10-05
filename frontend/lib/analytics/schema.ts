@@ -31,6 +31,11 @@ export const events = pgTable(
         utmSource: text("utm_source"),
         utmMedium: text("utm_medium"),
         utmCampaign: text("utm_campaign"),
+        /** Pageviews only: the app whose in-app browser was used (lib/analytics/sources). */
+        inApp: text("in_app"),
+        /** Pageviews only: classified source; a session's first pageview is its source. */
+        sourceChannel: text("source_channel"),
+        sourcePlatform: text("source_platform"),
         country: char("country", { length: 2 }),
         device: text("device").notNull(), // mobile|tablet|desktop
         viewportW: smallint("viewport_w"),
@@ -113,5 +118,29 @@ export const dailyDimStats = pgTable(
     },
     (table) => ({
         pk: primaryKey({ columns: [table.day, table.dim, table.value] })
+    })
+);
+
+/**
+ * One row per (day, source). Each session counts once per UTC day, credited to
+ * the source of its first pageview (which may be on an earlier day).
+ */
+export const dailySourceStats = pgTable(
+    "daily_source_stats",
+    {
+        day: date("day").notNull(),
+        channel: text("channel").notNull(),
+        platform: text("platform").notNull(),
+        medium: text("medium").notNull().default(""),
+        campaign: text("campaign").notNull().default(""),
+        sessions: integer("sessions").notNull().default(0),
+        visitors: integer("visitors").notNull().default(0),
+        views: integer("views").notNull().default(0),
+        storySessions: integer("story_sessions").notNull().default(0),
+        completeSessions: integer("complete_sessions").notNull().default(0),
+        shareSessions: integer("share_sessions").notNull().default(0)
+    },
+    (table) => ({
+        pk: primaryKey({ columns: [table.day, table.channel, table.platform, table.medium, table.campaign] })
     })
 );

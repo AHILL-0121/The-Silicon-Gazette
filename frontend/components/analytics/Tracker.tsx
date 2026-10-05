@@ -3,7 +3,7 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 
-import { track, setTrackingPath } from "@/lib/analytics/client";
+import { track, setTrackingPath, stripTagParams } from "@/lib/analytics/client";
 
 // ---------------------------------------------------------------------------
 // Delegated click handler
@@ -94,6 +94,8 @@ export function Tracker() {
 
         // The streamed <title> may not be in the document yet; it's optional.
         track("pageview", document.title ? { title: document.title.slice(0, 300) } : {});
+        // The pageview has read the tags synchronously; later events don't need them.
+        if (isLanding) stripTagParams();
         // eslint-disable-next-line react-hooks/exhaustive-deps -- sendExit only reads refs
     }, [pathname, isAnalytics]);
 
