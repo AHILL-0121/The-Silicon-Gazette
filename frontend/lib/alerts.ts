@@ -40,10 +40,16 @@ export async function sendAlert(key: string, message: string, details: Record<st
  * `ALERT_WEBHOOK_URL` in the same format as `sendAlert`, without its cooldown.
  * Never throws.
  */
-export async function sendNotice(key: string, message: string, details: Record<string, unknown> = {}): Promise<void> {
+export async function sendNotice(
+  key: string,
+  message: string,
+  details: Record<string, unknown> = {},
+  /** A webhook other than ALERT_WEBHOOK_URL, e.g. a dedicated channel for the analytics digest. */
+  webhookUrl?: string
+): Promise<void> {
   logEvent("info", "notice", { key, message, ...details });
 
-  const url = process.env.ALERT_WEBHOOK_URL;
+  const url = webhookUrl || process.env.ALERT_WEBHOOK_URL;
   if (!url) return;
 
   try {
