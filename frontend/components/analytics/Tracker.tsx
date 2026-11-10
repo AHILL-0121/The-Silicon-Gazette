@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useRef } from "react";
 
 import { track, setTrackingPath, stripTagParams } from "@/lib/analytics/client";
+import { startVitals } from "@/lib/analytics/vitals-client";
 
 // ---------------------------------------------------------------------------
 // Delegated click handler
@@ -184,6 +185,16 @@ export function Tracker() {
             if (completeTimer !== null) clearTimeout(completeTimer);
         };
     }, [pathname, isStoryPage, isAnalytics]);
+
+    // Core Web Vitals: once per page load, for the landing page.
+    const vitalsStarted = useRef(false);
+    useEffect(() => {
+        if (isAnalytics || vitalsStarted.current) return;
+        vitalsStarted.current = true;
+        startVitals(pathname);
+        // Never torn down on navigation: the metrics belong to the whole page load.
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- landing path only
+    }, [isAnalytics]);
 
     // Delegated click tracking
     useEffect(() => {

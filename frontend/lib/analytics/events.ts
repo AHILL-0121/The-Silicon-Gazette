@@ -20,7 +20,8 @@ export const EVENT_NAMES = [
     "reader_control",
     "edition_nav",
     "section_nav",
-    "generate_request"
+    "generate_request",
+    "web_vital"
 ] as const;
 
 export type EventName = (typeof EVENT_NAMES)[number];
@@ -52,6 +53,12 @@ const readerControlProps = z.object({ size: z.number().int().nonnegative() });
 const editionNavProps = z.object({ dir: z.enum(["prev", "next"]) });
 const sectionNavProps = z.object({ section: z.string() });
 const generateRequestProps = z.object({ trusted: z.boolean(), cached: z.boolean(), status: z.number().int() });
+/** Core Web Vitals: a metric name, its value (ms, or unitless for CLS) and a rating. No identifiers. */
+const webVitalProps = z.object({
+    metric: z.enum(["LCP", "INP", "CLS", "FCP", "TTFB"]),
+    value: z.number().nonnegative().max(1_000_000),
+    rating: z.enum(["good", "needs-improvement", "poor"])
+});
 
 // ---------------------------------------------------------------------------
 // Discriminated union — used by the ingestion endpoint
@@ -93,7 +100,8 @@ export const analyticsEventSchema = z.discriminatedUnion("name", [
     eventOf("reader_control", readerControlProps),
     eventOf("edition_nav", editionNavProps),
     eventOf("section_nav", sectionNavProps),
-    eventOf("generate_request", generateRequestProps)
+    eventOf("generate_request", generateRequestProps),
+    eventOf("web_vital", webVitalProps)
 ]);
 
 export type AnalyticsEvent = z.infer<typeof analyticsEventSchema>;

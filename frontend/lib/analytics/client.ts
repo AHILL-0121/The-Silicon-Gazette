@@ -53,6 +53,15 @@ function isOptedOut(): boolean {
     return false;
 }
 
+/** True when this browser has been told not to send analytics (the owner's browser after signing in). */
+export function hasOptOut(): boolean {
+    try {
+        return localStorage.getItem(OPT_OUT_KEY) === "1";
+    } catch {
+        return false;
+    }
+}
+
 export function setOptOut(value: boolean): void {
     try {
         if (value) {
@@ -199,10 +208,10 @@ function utmParams(): Pick<QueuedEvent, "utmSource" | "utmMedium" | "utmCampaign
  * Push an event onto the queue. Flushed after 2 s, when queue reaches 10,
  * or on page hide. No-ops when the visitor has opted out.
  */
-export function track(name: string, props: Record<string, unknown> = {}): void {
+export function track(name: string, props: Record<string, unknown> = {}, path?: string): void {
     if (isOptedOut()) return;
 
-    const event: QueuedEvent = { name, props, path: currentPath, ...utmParams() };
+    const event: QueuedEvent = { name, props, path: path ?? currentPath, ...utmParams() };
     if (pendingReferrer) {
         event.referrer = pendingReferrer.slice(0, 1024);
         pendingReferrer = undefined;
