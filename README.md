@@ -94,6 +94,8 @@ All variables are listed with comments in [`frontend/.env.example`](./frontend/.
 - Page paths are stored without query strings. For the landing page, the referring site's host name (never the full URL) and any `utm_*` / `ref` tags are kept; the tags are then removed from the address bar.
 - For in-app browsers (Instagram, Facebook, LinkedIn…) only the app's name is stored, not the user agent.
 - Signing in also excludes your own browser; the login page has an "Exclude this browser" link for other browsers.
+- Core Web Vitals (LCP, INP, CLS, FCP, TTFB) are measured in the reader's browser and sent as `web_vital` events: a metric name, a number and a good / needs-improvement / poor rating, with the page path. No element selectors, no URLs beyond the path, no identifiers. The same Do Not Track, Global Privacy Control, bot and opt-out rules apply.
+- Requests dropped for being a bot, Do Not Track or Global Privacy Control are counted per day (`analytics_counters`), for the dashboard's bot-filter rate. Nothing else about them is kept.
 - Raw events are kept indefinitely in Neon.
 
 **How data flows.** The browser batches events to `POST /api/track` (a 4 KB and 10-event limit, and 120 requests a minute per IP). A nightly rollup at 00:20 UTC (GitHub Actions, `.github/workflows/analytics-rollup.yml`, with Vercel Cron at 02:00 UTC as a backup) aggregates yesterday into daily tables. The dashboard reads rollups for older days and raw events for the last 24–48 hours, using the same SQL for both, so the numbers match. Days are UTC; visitor and session counts are per day, summed over the range.
@@ -116,6 +118,14 @@ curl -X POST "$SITE_URL/api/analytics/rollup" -H "Authorization: Bearer $CRON_SE
 ```
 
 Rollups are idempotent, so running one twice gives the same rows.
+
+**Dashboard extras.** New tables (`analytics_counters`, `analytics_api_tokens`, `analytics_annotations`, `api_usage`, `fact_checks`) need `npx drizzle-kit push`; until then each panel shows a setup note instead of failing.
+- *Filters* (device, country, source) narrow every number on the page. Rollups have no such split, so a filtered view reads raw events for the whole range. Alerts, the pipeline table, tracking health and the tools ignore filters.
+- *Search Console*: set `GSC_SERVICE_ACCOUNT_JSON` (and `GSC_SITE_URL`), and add the service account's email as a user on the property.
+- *Digest and alerts*: a daily 07:00 UTC cron (`/api/analytics/digest`, needs `CRON_SECRET`) posts a summary and open warnings to `ANALYTICS_DIGEST_WEBHOOK_URL` / `ALERT_WEBHOOK_URL`, and by email through Resend if configured. The Tools section has a preview and a test send.
+- *Production*: every Groq, Gemini and Tavily call writes a row to `api_usage`, and each generated edition writes its fact-check result to `fact_checks` (best effort; it never fails a run). These feed API usage, fact-check history, source reliability and quality vs engagement.
+- *API tokens*: read-only `sga_` bearer tokens for GET data routes (not the backup or token routes). *Chart notes*: annotations shown as markers on the traffic chart.
+- *Core Web Vitals* and the *bot-filter rate* are collected from now on; see Privacy above.
 
 **Checks.** `npm run verify:analytics` (in `frontend/`) tests visitor hashing, bot filtering, event validation, the session rules against the real Redis, and that every dashboard route requires a session. Add `-- --db YYYY-MM-DD` to also check rollup idempotency and rollup = raw for that day. This writes that day's rollup rows, just as the nightly job would.
 
