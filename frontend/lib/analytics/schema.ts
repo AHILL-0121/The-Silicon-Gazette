@@ -1,5 +1,6 @@
 import {
     bigserial,
+    serial,
     char,
     date,
     index,
@@ -144,3 +145,44 @@ export const dailySourceStats = pgTable(
         pk: primaryKey({ columns: [table.day, table.channel, table.platform, table.medium, table.campaign] })
     })
 );
+
+// ---------------------------------------------------------------------------
+// Counters: tracking requests dropped before storage (bot filter rate).
+// ---------------------------------------------------------------------------
+
+/** One row per (day, key): accepted, bot, dnt, gpc. Counts events, not requests. */
+export const analyticsCounters = pgTable(
+    "analytics_counters",
+    {
+        day: date("day").notNull(),
+        key: text("key").notNull(),
+        count: integer("count").notNull().default(0)
+    },
+    (table) => ({
+        pk: primaryKey({ columns: [table.day, table.key] })
+    })
+);
+
+// ---------------------------------------------------------------------------
+// Read-only API tokens for scripts and spreadsheets. Only the SHA-256 is stored.
+// ---------------------------------------------------------------------------
+export const analyticsApiTokens = pgTable("analytics_api_tokens", {
+    id: serial("id").primaryKey(),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    /** First characters of the token, so the list can tell tokens apart. */
+    prefix: text("prefix").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true })
+});
+
+// ---------------------------------------------------------------------------
+// Manual annotations drawn on the traffic chart ("launched the newsletter").
+// ---------------------------------------------------------------------------
+export const analyticsAnnotations = pgTable("analytics_annotations", {
+    id: serial("id").primaryKey(),
+    day: date("day").notNull(),
+    label: text("label").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+});
