@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 
 import { getRedis } from "@/lib/redis";
 
+import { bumpCounter } from "@/lib/analytics/counters";
 import { insertEventsAfter, type EventRow } from "@/lib/analytics/ingest";
 import { analyticsEventSchema, trackBatchSchema, type AnalyticsEvent } from "@/lib/analytics/events";
 import { visitorHash, isBot, deviceFromUA, referrerHost, pageTypeFromPath, utcDayString, bucketViewport } from "@/lib/analytics/visitor";
@@ -118,7 +119,9 @@ export async function POST(req: Request) {
     const dnt = req.headers.get("dnt") ?? "";
     const gpc = req.headers.get("sec-gpc") ?? "";
 
-    if (isBot(ua) || dnt === "1" || gpc === "1") {
+    const dropReason = isBot(ua) ? "bot" : dnt === "1" ? "dnt" : gpc === "1" ? "gpc" : null;
+    if (dropReason) {
+        bumpCounter(dropReason, events.length);
         return new NextResponse(null, { status: 204 });
     }
 
@@ -171,7 +174,10 @@ export async function POST(req: Request) {
     }
 
     // 8. Deferred insert (never blocks the response)
-    if (rows.length > 0) insertEventsAfter(rows);
+    if (rows.length > 0) {
+        insertEventsAfter(rows);
+        bumpCounter("accepted", rows.length);
+    }
 
     return new NextResponse(null, { status: 204 });
 }
