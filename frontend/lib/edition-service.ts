@@ -7,6 +7,8 @@ import {
   getEditionByDate,
   getLatestEditionDate,
   getRecentHeadlines,
+  getRecentRepoNames,
+  getRecentSourceUrls,
   getSearchContext,
   listEditionStoryIndex,
   listEditionSummariesPage,
@@ -14,7 +16,9 @@ import {
   saveSearchContext
 } from "./db";
 import { buildEditionView, visibleStorySlugs, type EditionView } from "./edition-view";
-import { normalizeEdition } from "./gazette";
+import { GazetteEditionSchema, normalizeEditionCandidate } from "./gazette";
+import { buildEvidenceIndex } from "./evidence";
+import { groundEdition, type GroundingReport } from "./grounding";
 import { sendAlert, sendNotice } from "./alerts";
 import { claimGenerationRun } from "./budget";
 import { acquireGenerationLock } from "./generation-lock";
@@ -22,8 +26,10 @@ import { generateGazetteViaGemini, getGeminiModelName, isGeminiConfigured } from
 import { generateGazette, getGroqModelName, type RawEdition } from "./groq";
 import { errorFields, logEvent, logServerError } from "./logger";
 import { absoluteUrl } from "./site";
-import { TavilyError, fetchNewsContext, serializeSearchContext } from "./tavily";
-import type { ArchivePage, ArchiveQuery, EditionRecord, SearchContext } from "./types";
+import { TavilyError, buildSearchContext } from "./tavily";
+import { hostOf, recordFactCheck } from "./usage";
+import { fetchNewsContext, repoWatchFromBlocks } from "./news";
+import type { ArchivePage, ArchiveQuery, EditionRecord, GazetteEdition, Repo, SearchContext } from "./types";
 
 export class NoEditionFoundError extends Error {}
 export class GenerationFailedError extends Error {}
@@ -57,7 +63,7 @@ async function loadNewsContext(date: string): Promise<{ context: SearchContext; 
   try {
     const blocks = await getSearchContext(date);
     if (blocks) {
-      return { context: { blocks, serialized: serializeSearchContext(blocks) }, reused: true };
+      return { context: buildSearchContext(blocks), reused: true };
     }
   } catch (error) {
     logServerError("search_context.read_failed", error, { date });
@@ -91,6 +97,49 @@ async function loadRecentHeadlines(date: string): Promise<string[]> {
   }
 }
 
+/** A source used within this many days is skipped unless the edition would run short. */
+const SOURCE_REUSE_DAYS = 7;
+
+async function loadRecentSourceUrls(date: string): Promise<Set<string>> {
+  try {
+    return new Set(await getRecentSourceUrls(date, SOURCE_REUSE_DAYS));
+  } catch (error) {
+    logServerError("recent_sources.read_failed", error, { date });
+    return new Set();
+  }
+}
+
+export interface VerifyContext {
+  allowedUrls: Set<string>;
+  evidenceIndex: ReturnType<typeof buildEvidenceIndex>;
+  recentUrls: Set<string>;
+  /** GitHub's own repo data; replaces whatever repos the model wrote. */
+  githubRepos: Repo[] | null;
+}
+
+/**
+ * Normalises the model output, then fact-checks it against the search results:
+ * unsupported stories, sentences, numbers and repos are removed before the
+ * edition can be saved. Throws if what is left is not publishable.
+ */
+export function verifyEdition(raw: RawEdition, context: VerifyContext): { content: GazetteEdition; report: GroundingReport } {
+  const normalized = normalizeEditionCandidate(
+    context.githubRepos ? { ...raw, repos: context.githubRepos } : raw,
+    { allowedUrls: context.allowedUrls }
+  ) as GazetteEdition;
+  const grounded = groundEdition(normalized, context.evidenceIndex, { recentUrls: context.recentUrls });
+  return { content: GazetteEditionSchema.parse(grounded.edition), report: grounded.report };
+}
+
+async function loadRecentRepoNames(date: string): Promise<Set<string>> {
+  try {
+    return new Set(await getRecentRepoNames(date, SOURCE_REUSE_DAYS));
+  } catch (error) {
+    logServerError("recent_repos.read_failed", error, { date });
+    return new Set();
+  }
+}
+
 async function runPipeline(date: string, budget: { used: number; limit: number }): Promise<EditionRecord> {
   const start = Date.now();
   // Search once and reuse the results for the fallback provider. Without
@@ -109,14 +158,25 @@ async function runPipeline(date: string, budget: { used: number; limit: number }
   );
   const searchMs = Date.now() - start;
   const recentHeadlines = await loadRecentHeadlines(date);
+  const recentUrls = await loadRecentSourceUrls(date);
+  const evidenceIndex = buildEvidenceIndex(searchContext.blocks);
+  // GitHub's own data (when available) replaces model-written repo entries.
+  const githubRepos = repoWatchFromBlocks(searchContext.blocks, await loadRecentRepoNames(date));
+  let report: GroundingReport | undefined;
+
+  const verify = (candidate: RawEdition): GazetteEdition => {
+    const result = verifyEdition(candidate, { allowedUrls, evidenceIndex, recentUrls, githubRepos });
+    report = result.report;
+    return result.content;
+  };
   let fallbackReason: string | undefined;
 
   let raw: RawEdition;
   let model: string;
   try {
-    raw = await generateGazette(date, searchContext.serialized, recentHeadlines);
+    raw = await generateGazette(date, searchContext.serialized, recentHeadlines, searchContext.articles);
     model = getGroqModelName();
-    normalizeEdition(raw, { allowedUrls });
+    verify(raw);
   } catch (groqError) {
     logServerError("generation.groq_failed", groqError, { date, elapsedMs: Date.now() - start });
     if (!isGeminiConfigured()) {
@@ -128,7 +188,7 @@ async function runPipeline(date: string, budget: { used: number; limit: number }
     }
     fallbackReason = groqError instanceof Error ? groqError.message : String(groqError);
     try {
-      raw = await generateGazetteViaGemini(date, searchContext.serialized, recentHeadlines);
+      raw = await generateGazetteViaGemini(date, searchContext.serialized, recentHeadlines, searchContext.articles);
     } catch (geminiError) {
       // Name both failures so the alert shows why Groq failed, not just the fallback.
       const geminiReason = geminiError instanceof Error ? geminiError.message : String(geminiError);
@@ -139,7 +199,20 @@ async function runPipeline(date: string, budget: { used: number; limit: number }
     model = getGeminiModelName();
   }
 
-  const content = normalizeEdition(raw, { allowedUrls });
+  const content = verify(raw);
+  if (report) {
+    logEvent("info", "generation.grounding", {
+      date,
+      droppedStories: report.droppedStories,
+      trimmedSentences: report.trimmedSentences,
+      headlinesReplaced: report.headlinesReplaced,
+      fallbackSummaries: report.fallbackSummaries,
+      repoFixes: report.repoFixes,
+      droppedRepos: report.droppedRepos,
+      sourceRelabeled: report.sourceRelabeled,
+      marketBriefReplaced: report.marketBriefReplaced
+    });
+  }
   const record = await saveEdition({
     date,
     issue_num: computeIssueNumber(date),
@@ -148,12 +221,50 @@ async function runPipeline(date: string, budget: { used: number; limit: number }
     model
   });
 
+  if (report) {
+    // Fact-check history for the analytics Pipeline section; never fails the run.
+    try {
+      const hosts = new Map<string, { kept: number; dropped: number }>();
+      for (const story of raw.stories) {
+        const host = hostOf((story as { url?: unknown } | null)?.url);
+        if (host) hosts.set(host, { kept: 0, dropped: (hosts.get(host)?.dropped ?? 0) + 1 });
+      }
+      for (const story of content.stories) {
+        const entry = hosts.get(hostOf(story.url));
+        if (entry && entry.dropped > 0) {
+          entry.kept += 1;
+          entry.dropped -= 1;
+        }
+      }
+      await recordFactCheck({
+        date,
+        model,
+        storiesIn: raw.stories.length,
+        storiesOut: content.stories.length,
+        droppedStories: report.droppedStories,
+        trimmedSentences: report.trimmedSentences,
+        headlinesReplaced: report.headlinesReplaced,
+        fallbackSummaries: report.fallbackSummaries,
+        droppedRepos: report.droppedRepos.length,
+        repoFixes: report.repoFixes.length,
+        sourceRelabeled: report.sourceRelabeled,
+        marketBriefReplaced: report.marketBriefReplaced,
+        sources: [...hosts.entries()].map(([host, counts]) => ({ host, ...counts }))
+      });
+    } catch (error) {
+      logEvent("warn", "fact_check.prepare_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   const linkedSources = new Set(
     [content.headline.url, ...content.stories.map((story) => story.url)].filter((url): url is string => Boolean(url))
   );
   await sendNotice(`generation-succeeded:${date}`, `Edition ${date} (No. ${record.issue_num}) published.`, {
     lead: `[${content.headline.category}] ${content.headline.title}`,
     contents: `${content.stories.length} stories, ${content.repos.length} repos, market brief ${content.market_brief ? "included" : "missing"}`,
+    factCheck: report
+      ? `${report.droppedStories.length} stories dropped, ${report.trimmedSentences} unsupported sentences removed, ${report.headlinesReplaced} headlines replaced by source titles, ${report.droppedRepos.length} repos dropped, ${report.repoFixes.length} repo fields blanked`
+      : "not run",
     sources: `${linkedSources.size} linked of ${allowedUrls.size} search results${searchReused ? " (reused from an earlier attempt)" : ""}`,
     model: fallbackReason ? `${model} (Gemini fallback; Groq failed: ${fallbackReason.slice(0, 200)})` : model,
     timing: `${seconds(record.latency_ms ?? Date.now() - start)} total (search ${seconds(searchMs)}, writing ${seconds((record.latency_ms ?? 0) - searchMs)})`,

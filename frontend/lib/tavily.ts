@@ -1,6 +1,15 @@
+import { isStale, serializeEvidence } from "./evidence";
 import type { SearchContext, SearchResult, SearchTopicBlock } from "./types";
+import { recordApiUsage } from "./usage";
 
 const TAVILY_BASE = "https://api.tavily.com";
+
+/**
+ * "advanced" returns query-relevant passages instead of the first lines of the
+ * page, which for many sites are the navigation menu. It costs 2 credits per
+ * search (6 a day for the three blocks).
+ */
+const SEARCH_DEPTH = process.env.TAVILY_SEARCH_DEPTH === "basic" ? "basic" : "advanced";
 
 /**
  * Tavily only applies `days` to `topic: "news"`; a general search ignores it
@@ -99,6 +108,7 @@ async function searchTopic(query: string, searchTopic: "news" | "general"): Prom
     throw new Error("TAVILY_API_KEY is not configured");
   }
 
+  const startedAt = Date.now();
   const response = await fetchWithRetry(
     `${TAVILY_BASE}/search`,
     {
@@ -110,8 +120,9 @@ async function searchTopic(query: string, searchTopic: "news" | "general"): Prom
       body: JSON.stringify({
         query,
         topic: searchTopic,
-        search_depth: "basic",
-        max_results: 5,
+        search_depth: SEARCH_DEPTH,
+        ...(SEARCH_DEPTH === "advanced" ? { chunks_per_source: 2 } : {}),
+        max_results: searchTopic === "news" ? 8 : 5,
         include_answer: false,
         days: 1
       })
@@ -121,22 +132,27 @@ async function searchTopic(query: string, searchTopic: "news" | "general"): Prom
 
   const payload = (await response.json()) as { results?: SearchResult[] };
   const results = payload.results ?? [];
+  await recordApiUsage({ provider: "tavily", model: SEARCH_DEPTH, kind: "search", credits: SEARCH_DEPTH === "advanced" ? 2 : 1, latencyMs: Date.now() - startedAt });
   // GitHub listing pages (/trending, /topics/...) are how the repo watch finds
   // repos, so the listing filter only applies to news results.
-  return searchTopic === "news" ? results.filter((result) => !isListingPage(result.url)) : results;
+  // Tavily's `days` filter is loose, so old pages are dropped here as well.
+  return searchTopic === "news"
+    ? results.filter((result) => !isListingPage(result.url) && !isStale(result.published_date))
+    : results;
 }
 
+/** Prompt text for every result (listings included), for the lead and repo watch. */
 export function serializeSearchContext(blocks: SearchTopicBlock[]): string {
-  return blocks
-    .map(({ topic, results }) => {
-      const lines = results.map((item) => {
-        const snippet = item.content?.slice(0, 300) ?? "";
-        const published = item.published_date ? `\n  Published: ${item.published_date}` : "";
-        return `- ${item.title}\n  URL: ${item.url}${published}\n  Snippet: ${snippet}`;
-      });
-      return `=== ${topic} ===\n${lines.join("\n")}`;
-    })
-    .join("\n\n");
+  return serializeEvidence(blocks);
+}
+
+/** Prompt text for article results only; stories are written from this. */
+export function serializeArticleContext(blocks: SearchTopicBlock[]): string {
+  return serializeEvidence(blocks, { articlesOnly: true });
+}
+
+export function buildSearchContext(blocks: SearchTopicBlock[]): SearchContext {
+  return { blocks, serialized: serializeSearchContext(blocks), articles: serializeArticleContext(blocks) };
 }
 
 export async function fetchNewsContext(): Promise<SearchContext> {
@@ -151,8 +167,5 @@ export async function fetchNewsContext(): Promise<SearchContext> {
     })
   );
 
-  return {
-    blocks,
-    serialized: serializeSearchContext(blocks)
-  };
+  return buildSearchContext(blocks);
 }

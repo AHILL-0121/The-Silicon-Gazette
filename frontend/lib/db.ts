@@ -209,10 +209,11 @@ export async function saveEdition(input: SaveEditionInput): Promise<EditionRecor
   }, saveToMemory);
 }
 
-/** Stored search results are only needed while that day's edition is being retried. */
-const SEARCH_CONTEXT_KEEP_DAYS = 7;
-
-/** The day's stored Tavily results, or null if none were saved (or there is no database). */
+/**
+ * The day's stored Tavily results, or null if none were saved (or there is no
+ * database). Rows are kept permanently: they are the evidence an edition was
+ * written from, so any past edition can be fact-checked against them later.
+ */
 export async function getSearchContext(date: string): Promise<SearchTopicBlock[] | null> {
   const db = getDb();
   if (!db) return null;
@@ -224,14 +225,35 @@ export async function getSearchContext(date: string): Promise<SearchTopicBlock[]
   return rows[0]?.blocks ?? null;
 }
 
-/** Stores the day's Tavily results (first write wins) and drops ones older than a week. */
+/** Stores the day's Tavily results (first write wins). Never deleted. */
 export async function saveSearchContext(date: string, blocks: SearchTopicBlock[]): Promise<void> {
   const db = getDb();
   if (!db) return;
   await db.insert(searchContexts).values({ date, blocks }).onConflictDoNothing({ target: searchContexts.date });
-  await db
-    .delete(searchContexts)
-    .where(lt(searchContexts.date, sql`${date}::date - ${SEARCH_CONTEXT_KEEP_DAYS}::int`));
+}
+
+/** Source URLs cited by the editions of the `days` days before `date`. */
+export async function getRecentSourceUrls(date: string, days: number): Promise<string[]> {
+  const db = getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({ content: editions.content })
+    .from(editions)
+    .where(and(lt(editions.date, date), sql`${editions.date} >= ${date}::date - ${days}::int`));
+  return rows.flatMap(({ content }) =>
+    [content.headline.url, ...content.stories.map((story) => story.url)].filter((url): url is string => Boolean(url))
+  );
+}
+
+/** Repo-watch names of the editions of the `days` days before `date`, lowercase. */
+export async function getRecentRepoNames(date: string, days: number): Promise<string[]> {
+  const db = getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({ content: editions.content })
+    .from(editions)
+    .where(and(lt(editions.date, date), sql`${editions.date} >= ${date}::date - ${days}::int`));
+  return rows.flatMap(({ content }) => content.repos.map((repo) => repo.name.toLowerCase()));
 }
 
 /** Lead and story headlines of the editions from the `days` days before `date`, newest first. */

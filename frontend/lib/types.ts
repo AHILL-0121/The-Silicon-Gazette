@@ -79,6 +79,8 @@ export interface SearchResult {
   content: string;
   published_date?: string;
   score: number;
+  /** Structured GitHub data (free GitHub source only): the repo watch is built from it, not from a model. */
+  repo?: { name: string; stars: number; language: string; description: string };
 }
 
 export interface SearchTopicBlock {
@@ -89,5 +91,8 @@ export interface SearchTopicBlock {
 
 export interface SearchContext {
   blocks: SearchTopicBlock[];
+  /** Every result, listings included: the lead call and repo watch read this. */
   serialized: string;
+  /** Article results only: stories are written from this and nothing else. */
+  articles: string;
 }

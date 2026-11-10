@@ -2,6 +2,7 @@ import Groq from "groq-sdk";
 
 import { isRateLimitError, parseModelJsonValue } from "./gazette";
 import { logEvent } from "./logger";
+import { recordApiUsage } from "./usage";
 import type { Category } from "./types";
 
 const MODEL_NAME = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
@@ -92,8 +93,26 @@ function rateLimitWaitMs(error: unknown): number | null {
 export function buildSystemPrompt(): string {
   return `You are the editor of The Silicon Gazette, a daily broadsheet for the tech industry.
 Compose today's edition using ONLY the news provided in the search results as source material.
-Never invent companies, numbers, quotes or links. Respond with valid JSON only, no markdown fencing or commentary.`;
+Never invent companies, people, numbers, quotes, product features, causes, reactions or links.
+Every statement must be stated in the title or snippet of the result you cite. Do not add background, analysis,
+predictions, "experts say" or "analysts note" remarks that the snippet does not contain. Each sentence you write is
+checked against the snippet, and sentences it does not support are deleted.
+Respond with valid JSON only, no markdown fencing or commentary.`;
 }
+
+/**
+ * Each search result carries an "Evidence" label (low/medium/high). The length
+ * of a story follows it: padding a title-only result to 200 words is where
+ * invented detail came from.
+ */
+export const LENGTH_RULES = `- summary length follows the "Evidence" label of the result you cite:
+    low (title only or a fragment): ONE sentence that restates the title, at most 30 words.
+    medium: 2-3 sentences, at most 60 words.
+    high: up to 2 short paragraphs separated by \\n\\n, at most 120 words.
+- Use only facts, names and numbers that appear in that result's title or snippet. Write nothing else: no background,
+  no implications, no quotes, no figures that are not printed in the snippet.
+- Only use results marked "Type: article". Never write a story from a "Type: listing" result.
+- Every story needs its own result: never cite the same URL twice.`;
 
 function formatExclusions(usedHeadlines: string[]): string {
   if (usedHeadlines.length === 0) return "";
@@ -136,8 +155,8 @@ ${formatExclusions(usedHeadlines)}${formatRecentCoverage(recentHeadlines)}
 Rules:
 - Every story must cover a DIFFERENT news event from the search results.
 - If there are fewer distinct events that fit this section, return fewer stories rather than repeating one.
-- headline: newspaper style, at most 14 words.
-- summary: 2-3 paragraphs separated by \\n\\n, 150-250 words in total, with context and implications.
+- headline: newspaper style, at most 14 words, using words from the result's title.
+${LENGTH_RULES}
 - source: the publication name of the result you used.
 - url: copy the exact URL of the result you used from the search results.`;
 }
@@ -162,13 +181,19 @@ Generate the lead story and repository watch as a JSON object:
 }
 
 Rules:
-- headline.title: 7-12 word headline for the single most important story.
-- headline.deck: 1-2 sentence subheading.
-- headline.body: exactly 3 paragraphs separated by \\n\\n.
+- headline.title: 7-12 word headline for the single most important story, using words from the result's title.
+- headline.deck: 1-2 sentence subheading, using only facts from the snippet.
+- headline.body: 1-3 paragraphs separated by \\n\\n, at least 100 characters, following the length rules below.
+- Pick the lead from a "Type: article" result whose Evidence is medium or high.
+- Length rules (they apply to the lead too):
+${LENGTH_RULES}
 - headline.url: copy the exact URL of the main source from the search results.
-- repos: exactly 5 distinct GitHub repositories mentioned in the search results, name in owner/repo format.
-- repos[].stars: star count from the results (e.g. "14.2k"), or "—" if unknown. Never guess.
-- market_brief: one sentence under 220 characters.`;
+- repos: up to 5 distinct GitHub repositories whose "owner/repo" name is literally written in the search results.
+  Never add a repository that is not named there, and never guess a name.
+- repos[].stars: the star count printed next to that repository (e.g. "14.2k"), or "—". Never guess or compute it.
+- repos[].description: shortened from the text next to the repository name, or "—" if there is none.
+- repos[].language: only if the results print it, otherwise "Unknown".
+- market_brief: one sentence under 220 characters that uses only figures printed in the search results.`;
 }
 
 async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<string> {
@@ -183,6 +208,7 @@ async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<
     const groq = new Groq({ apiKey: apiKeys[keyIndex], timeout: GROQ_TIMEOUT_MS, maxRetries: 0 });
     for (let attempt = 0; attempt <= 1; attempt += 1) {
       try {
+        const startedAt = Date.now();
         const completion = await groq.chat.completions.create({
           model: MODEL_NAME,
           max_tokens: maxTokens,
@@ -193,6 +219,14 @@ async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<
             { role: "system", content: buildSystemPrompt() },
             { role: "user", content: userPrompt }
           ]
+        });
+        await recordApiUsage({
+          provider: "groq",
+          model: MODEL_NAME,
+          kind: "generate",
+          promptTokens: completion.usage?.prompt_tokens,
+          completionTokens: completion.usage?.completion_tokens,
+          latencyMs: Date.now() - startedAt
         });
         return completion.choices[0]?.message?.content ?? "";
       } catch (error) {
@@ -226,7 +260,8 @@ async function completeWithGroq(userPrompt: string, maxTokens: number): Promise<
 export async function generateGazette(
   date: string,
   searchContext: string,
-  recentHeadlines: string[] = []
+  recentHeadlines: string[] = [],
+  articleContext: string = searchContext
 ): Promise<RawEdition> {
   const startedAt = Date.now();
   const mainRaw = await completeWithGroq(`${searchContext}\n\n${buildMainEditionPrompt(date, recentHeadlines)}`, 2000);
@@ -249,7 +284,7 @@ export async function generateGazette(
     }
     try {
       const raw = await completeWithGroq(
-        `${searchContext}\n\n${buildSectionPrompt(section, usedHeadlines, recentHeadlines)}`,
+        `${articleContext}\n\n${buildSectionPrompt(section, usedHeadlines, recentHeadlines)}`,
         2000
       );
       const parsed = parseModelJsonValue(raw, "array") as Array<Record<string, unknown> | null>;
