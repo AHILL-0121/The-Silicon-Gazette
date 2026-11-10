@@ -5,6 +5,8 @@ import { NextResponse } from "next/server";
 import { getRedis } from "@/lib/redis";
 import { logEvent } from "@/lib/logger";
 
+import { TOKEN_PREFIX, verifyApiToken } from "./tokens";
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -71,6 +73,17 @@ export async function createSession(): Promise<string> {
  * Applies rules R1–R5 and returns `{ ok: true, hash }` or a 401 NextResponse.
  */
 export async function requireAnalyticsSession(req: Request): Promise<SessionCheckResult> {
+    // Read-only API tokens (sga_...) work for GET requests to the data routes only.
+    const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer /, "");
+    if (bearer.startsWith(TOKEN_PREFIX)) {
+        const path = new URL(req.url).pathname;
+        if (req.method !== "GET" || /^\/api\/analytics\/(tokens|backup)(\/|$)/.test(path)) {
+            return NextResponse.json({ error: "forbidden" }, { status: 403 });
+        }
+        if (await verifyApiToken(bearer)) return { ok: true, hash: "api-token" };
+        return NextResponse.json({ error: "invalid_token" }, { status: 401 });
+    }
+
     const redis = getRedis();
     if (!redis) {
         return NextResponse.json({ error: "Analytics unavailable" }, { status: 503 });
