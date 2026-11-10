@@ -1,3 +1,4 @@
+import { parseFilters } from "@/lib/analytics/filters";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -25,6 +26,6 @@ export async function GET(req: Request) {
         return NextResponse.json({ error: "Invalid parameters" }, { status: 400 });
     }
 
-    const data = await queryEvents(parsed.data.from, parsed.data.to);
+    const data = await queryEvents(parsed.data.from, parsed.data.to, parseFilters(searchParams));
     return NextResponse.json(data, { headers: { "Cache-Control": "no-store" } });
 }

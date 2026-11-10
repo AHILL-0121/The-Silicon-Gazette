@@ -17,8 +17,11 @@ export function tsInDays(from: string, to: string): SQL {
 
 const EVENT_DAY = sql`(ts AT TIME ZONE 'UTC')::date`;
 
+/** `AND <filter>` for the events scans, or nothing when no dashboard filter is active. */
+const and = (f?: SQL): SQL => (f ? sql`AND ${f}` : sql``);
+
 /** Columns: day, path, page_type, edition_date, story_slug, views, visitors, sessions, completions, shares. */
-export function rawPageDaily(from: string, to: string): SQL {
+export function rawPageDaily(from: string, to: string, f?: SQL): SQL {
     return sql`
     SELECT ${EVENT_DAY} AS day,
            path,
@@ -31,13 +34,13 @@ export function rawPageDaily(from: string, to: string): SQL {
            (COUNT(*) FILTER (WHERE name = 'read_complete'))::int AS completions,
            (COUNT(*) FILTER (WHERE name = 'share'))::int AS shares
     FROM events
-    WHERE ${tsInDays(from, to)}
+    WHERE ${tsInDays(from, to)} ${and(f)}
       AND name IN ('pageview', 'read_complete', 'share')
     GROUP BY 1, 2`;
 }
 
 /** Columns: day, name, key, count, visitors. `key` is one low-cardinality prop, or ''. */
-export function rawEventDaily(from: string, to: string): SQL {
+export function rawEventDaily(from: string, to: string, f?: SQL): SQL {
     return sql`
     SELECT day, name, key, COUNT(*)::int AS count, COUNT(DISTINCT visitor_hash)::int AS visitors
     FROM (
@@ -57,17 +60,18 @@ export function rawEventDaily(from: string, to: string): SQL {
                  WHEN 'edition_nav' THEN props->>'dir'
                  WHEN 'generate_request' THEN props->>'status'
                  WHEN 'link_preview' THEN props->>'platform'
+                 WHEN 'web_vital' THEN (props->>'metric') || '|' || (props->>'rating')
                END,
                ''
              ) AS key
       FROM events
-      WHERE ${tsInDays(from, to)}
+      WHERE ${tsInDays(from, to)} ${and(f)}
     ) e
     GROUP BY day, name, key`;
 }
 
 /** Columns: day, dim, value, views, visitors. Pageviews only. */
-export function rawDimDaily(from: string, to: string): SQL {
+export function rawDimDaily(from: string, to: string, f?: SQL): SQL {
     return sql`
     SELECT day, dim, value, COUNT(*)::int AS views, COUNT(DISTINCT visitor_hash)::int AS visitors
     FROM (
@@ -79,7 +83,7 @@ export function rawDimDaily(from: string, to: string): SQL {
         ('device', device::text),
         ('utm_source', utm_source::text)
       ) AS d(dim, value)
-      WHERE ${tsInDays(from, to)}
+      WHERE ${tsInDays(from, to)} ${and(f)}
         AND name = 'pageview'
         AND d.value IS NOT NULL
     ) x
@@ -91,7 +95,7 @@ export function rawDimDaily(from: string, to: string): SQL {
  * open_sessions, deep_sessions, share_sessions. One row for every day in the
  * range, zeros included.
  */
-export function rawSessionDaily(from: string, to: string): SQL {
+export function rawSessionDaily(from: string, to: string, f?: SQL): SQL {
     return sql`
     SELECT g.day,
            COALESCE(s.views, 0) AS views,
@@ -118,7 +122,7 @@ export function rawSessionDaily(from: string, to: string): SQL {
              ))::int AS deep_sessions,
              (COUNT(DISTINCT session_id) FILTER (WHERE name = 'share'))::int AS share_sessions
       FROM events
-      WHERE ${tsInDays(from, to)}
+      WHERE ${tsInDays(from, to)} ${and(f)}
       GROUP BY 1
     ) s ON s.day = g.day`;
 }
@@ -129,7 +133,7 @@ export function rawSessionDaily(from: string, to: string): SQL {
  * pageview that day, credited to the source of its first pageview ever (a
  * session can start before midnight). Sessions here sum to daily_session_stats.
  */
-export function rawSourceDaily(from: string, to: string): SQL {
+export function rawSourceDaily(from: string, to: string, f?: SQL): SQL {
     return sql`
     SELECT s.day,
            COALESCE(l.source_channel, 'direct') AS channel,
@@ -151,7 +155,7 @@ export function rawSourceDaily(from: string, to: string): SQL {
              BOOL_OR(name = 'read_complete') AS complete,
              BOOL_OR(name = 'share') AS shared
       FROM events
-      WHERE ${tsInDays(from, to)}
+      WHERE ${tsInDays(from, to)} ${and(f)}
       GROUP BY 1, 2
       HAVING COUNT(*) FILTER (WHERE name = 'pageview') > 0
     ) s
@@ -193,7 +197,7 @@ const COLUMNS: Record<RollupTable, SQL> = {
     daily_source_stats: sql`day, channel, platform, medium, campaign, sessions, visitors, views, story_sessions, complete_sessions, share_sessions`
 };
 
-const RAW: Record<RollupTable, (from: string, to: string) => SQL> = {
+const RAW: Record<RollupTable, (from: string, to: string, f?: SQL) => SQL> = {
     daily_page_stats: rawPageDaily,
     daily_event_stats: rawEventDaily,
     daily_dim_stats: rawDimDaily,
@@ -207,7 +211,9 @@ const RAW: Record<RollupTable, (from: string, to: string) => SQL> = {
  * rest. `rawFrom` is the first day that isn't rolled up (see `rawStart`), so
  * the raw scan covers only the days that need it; null means none do.
  */
-export function merged(table: RollupTable, from: string, to: string, rawFrom: string | null): SQL {
+export function merged(table: RollupTable, from: string, to: string, rawFrom: string | null, f?: SQL): SQL {
+    // Rollups carry no device/country/source split, so a filtered view reads raw events for every day.
+    if (f) return RAW[table](from, to, f);
     const rolled = sql`SELECT ${COLUMNS[table]} FROM ${sql.raw(table)}
       WHERE day >= ${from}::date AND day <= ${to}::date AND day IN (${ROLLED_DAYS})`;
     if (!rawFrom) return rolled;

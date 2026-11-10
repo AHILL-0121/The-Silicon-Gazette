@@ -1,3 +1,4 @@
+import { parseFilters } from "@/lib/analytics/filters";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -28,7 +29,7 @@ export async function GET(req: Request) {
     }
 
     const { from, to, granularity } = parsed.data;
-    const data = await queryTimeseries(from, to, granularity);
+    const data = await queryTimeseries(from, to, granularity, parseFilters(searchParams));
 
     return NextResponse.json(data, { headers: { "Cache-Control": "no-store" } });
 }

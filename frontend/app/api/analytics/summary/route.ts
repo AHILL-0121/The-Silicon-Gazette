@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { parseFilters } from "@/lib/analytics/filters";
 import { isOkSession, requireAnalyticsSession } from "@/lib/analytics/session";
 import { querySummary } from "@/lib/analytics/queries";
 
@@ -26,6 +27,7 @@ export async function GET(req: Request) {
     }
 
     const { from, to } = parsed.data;
+    const filters = parseFilters(searchParams);
     if (from > to) {
         return NextResponse.json({ error: "from must not be after to" }, { status: 400 });
     }
@@ -38,8 +40,8 @@ export async function GET(req: Request) {
     const prevTo = new Date(fromMs - DAY_MS).toISOString().slice(0, 10);
 
     const [current, previous] = await Promise.all([
-        querySummary(from, to),
-        querySummary(prevFrom, prevTo)
+        querySummary(from, to, filters),
+        querySummary(prevFrom, prevTo, filters)
     ]);
 
     return NextResponse.json(

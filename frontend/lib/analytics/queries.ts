@@ -3,6 +3,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { db } from "@/lib/db";
 
 import { merged, rawStartQuery, tsInDays, type RollupTable } from "./daily";
+import { andFilter, filterSql, type Filters } from "./filters";
 
 // ---------------------------------------------------------------------------
 // Ranges are whole UTC days, both ends inclusive. Days older than the raw
@@ -24,10 +25,12 @@ function num(value: unknown): number {
 }
 
 /** One table's rows for [from, to], ready for `FROM (...) m`. */
-async function sourceFor(from: string, to: string) {
-    const [first] = await rows(rawStartQuery(from, to));
+async function sourceFor(from: string, to: string, filters?: Filters) {
+    const f = filterSql(filters);
+    // A filtered view reads raw events for every day, so the rollup lookup is moot.
+    const [first] = f ? [undefined] : await rows(rawStartQuery(from, to));
     const rawFrom = (first?.raw_from as string | null) ?? null;
-    return (table: RollupTable) => merged(table, from, to, rawFrom);
+    return (table: RollupTable) => merged(table, from, to, rawFrom, f);
 }
 
 // ---------------------------------------------------------------------------
@@ -43,8 +46,8 @@ export interface SummaryResult {
     completionRate: number;
 }
 
-export async function querySummary(fromUtc: string, toUtc: string): Promise<SummaryResult> {
-    const source = await sourceFor(fromUtc, toUtc);
+export async function querySummary(fromUtc: string, toUtc: string, filters?: Filters): Promise<SummaryResult> {
+    const source = await sourceFor(fromUtc, toUtc, filters);
     const [[s], [e]] = await Promise.all([
         rows(sql`
       SELECT COALESCE(SUM(views), 0) AS views,
@@ -87,7 +90,8 @@ export interface TimeseriesPoint {
 export async function queryTimeseries(
     fromUtc: string,
     toUtc: string,
-    granularity: "hour" | "day" | "week"
+    granularity: "hour" | "day" | "week",
+    filters?: Filters
 ): Promise<TimeseriesPoint[]> {
     let result: Row[];
 
@@ -107,12 +111,12 @@ export async function queryTimeseries(
                COUNT(*)::int AS views,
                COUNT(DISTINCT visitor_hash)::int AS visitors
         FROM events
-        WHERE ${tsInDays(fromUtc, toUtc)} AND name = 'pageview'
+        WHERE ${tsInDays(fromUtc, toUtc)} AND name = 'pageview' ${andFilter(filters)}
         GROUP BY 1
       ) v ON v.t = g.t
       ORDER BY g.t`);
     } else {
-        const source = await sourceFor(fromUtc, toUtc);
+        const source = await sourceFor(fromUtc, toUtc, filters);
         const bucket = granularity === "week" ? sql`date_trunc('week', day)::date` : sql`day`;
         result = await rows(sql`
       SELECT to_char(${bucket}, 'YYYY-MM-DD"T"00:00:00"Z"') AS t,
@@ -148,10 +152,11 @@ export async function queryTop(
     fromUtc: string,
     toUtc: string,
     kind: TopKind,
-    limit = 10
+    limit = 10,
+    filters?: Filters
 ): Promise<TopRow[]> {
     const limitN = Math.min(Math.max(1, limit), 50);
-    const source = await sourceFor(fromUtc, toUtc);
+    const source = await sourceFor(fromUtc, toUtc, filters);
     const toTop = (row: Row): TopRow => ({ label: String(row.label ?? ""), views: num(row.views), visitors: num(row.visitors) });
 
     const dim = DIM_FOR[kind];
@@ -244,14 +249,14 @@ export interface EventsResult {
     operations: OperationsStats;
 }
 
-export async function queryEvents(fromUtc: string, toUtc: string): Promise<EventsResult> {
-    const source = await sourceFor(fromUtc, toUtc);
+export async function queryEvents(fromUtc: string, toUtc: string, filters?: Filters): Promise<EventsResult> {
+    const source = await sourceFor(fromUtc, toUtc, filters);
 
     const [countRows, funnelRows, keyRows, notFoundRows, notFoundTotal] = await Promise.all([
         rows(sql`
       SELECT name, SUM(count)::int AS count, SUM(visitors)::int AS visitors
       FROM (${source("daily_event_stats")}) m
-      WHERE name <> 'link_preview'
+      WHERE name NOT IN ('link_preview', 'web_vital')
       GROUP BY name ORDER BY count DESC, name`),
         rows(sql`
       SELECT COALESCE(SUM(sessions), 0) AS step1,
@@ -343,8 +348,8 @@ export interface SourcesResult {
     previews: { platform: string; count: number }[];
 }
 
-export async function querySources(fromUtc: string, toUtc: string): Promise<SourcesResult> {
-    const source = await sourceFor(fromUtc, toUtc);
+export async function querySources(fromUtc: string, toUtc: string, filters?: Filters): Promise<SourcesResult> {
+    const source = await sourceFor(fromUtc, toUtc, filters);
 
     const [channelRows, platformRows, campaignRows, eventRows] = await Promise.all([
         rows(sql`
@@ -427,7 +432,7 @@ export async function queryLive(): Promise<LiveResult> {
         rows(sql`
       SELECT COUNT(DISTINCT session_id) AS sessions
       FROM events
-      WHERE ts >= ${cutoff}::timestamptz AND name NOT IN ('generate_request', 'link_preview')`),
+      WHERE ts >= ${cutoff}::timestamptz AND name NOT IN ('generate_request', 'link_preview', 'web_vital')`),
         rows(sql`
       SELECT path, COUNT(DISTINCT session_id) AS sessions
       FROM events

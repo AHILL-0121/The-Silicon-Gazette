@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { exportDaily, exportEvents, exportSources } from "@/lib/analytics/queries";
 import { isOkSession, requireAnalyticsSession } from "@/lib/analytics/session";
+import { queryVisitors } from "@/lib/analytics/visitors";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -10,7 +11,7 @@ export const maxDuration = 60;
 const querySchema = z.object({
     from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    type: z.enum(["events", "daily", "sources"]).default("events")
+    type: z.enum(["events", "daily", "sources", "visitors"]).default("events")
 });
 
 const EVENT_COLUMNS = [
@@ -19,6 +20,9 @@ const EVENT_COLUMNS = [
     "in_app", "source_channel", "source_platform", "country", "device", "viewport_w", "props"
 ];
 const DAILY_COLUMNS = ["day", "path", "page_type", "views", "visitors", "sessions", "completions", "shares"];
+const VISITOR_COLUMNS = [
+    "id", "last_seen", "first_seen", "country", "device", "channel", "platform", "views", "sessions", "max_depth", "completed"
+];
 const SOURCE_COLUMNS = [
     "day", "channel", "platform", "medium", "campaign", "sessions", "visitors", "views",
     "story_sessions", "complete_sessions", "share_sessions"
@@ -40,6 +44,15 @@ export async function GET(req: Request) {
     }
 
     const { from, to, type } = parsed.data;
+
+    if (type === "visitors") {
+        const { rows } = await queryVisitors(from, to, 5000);
+        const flat = rows.map((r) => ({
+            id: r.id, last_seen: r.lastSeen, first_seen: r.firstSeen, country: r.country, device: r.device,
+            channel: r.channel, platform: r.platform, views: r.views, sessions: r.sessions, max_depth: r.maxDepth, completed: r.completed
+        }));
+        return csvResponse(buildCsv(VISITOR_COLUMNS, flat), `analytics-visitors-${from}-${to}.csv`);
+    }
 
     if (type === "daily") {
         const rows = await exportDaily(from, to);

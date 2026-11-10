@@ -1,0 +1,13 @@
+{
+  "name": "The Silicon Gazette - Analytics",
+  "short_name": "Analytics",
+  "description": "Private analytics dashboard for The Silicon Gazette.",
+  "start_url": "/analytics",
+  "scope": "/analytics",
+  "display": "standalone",
+  "background_color": "#f4f0e7",
+  "theme_color": "#f4f0e7",
+  "icons": [
+    { "src": "/apple-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
+  ]
+}
