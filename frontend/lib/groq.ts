@@ -75,11 +75,12 @@ function wait(ms: number): Promise<void> {
 
 /**
  * The on_demand tier allows 8,000 tokens per minute and each call requests
- * ~2,400, so the sequential section calls hit the per-minute limit mid-run.
- * Groq names the wait ("Please try again in 11.775s"); short waits are worth
- * sitting out. Longer ones (daily limits read "in 2m30s") are not.
+ * 2,400-3,900, so the sequential section calls hit the per-minute limit mid-run.
+ * Groq names the wait ("Please try again in 24.6s"); waits up to a bit over a
+ * minute window are worth sitting out. Longer ones (daily limits read
+ * "in 2m30s") are not. 20s was too tight: a 24.6s wait failed a real run.
  */
-const RATE_LIMIT_MAX_WAIT_MS = Number(process.env.GROQ_RATE_LIMIT_MAX_WAIT_MS ?? 20_000);
+const RATE_LIMIT_MAX_WAIT_MS = Number(process.env.GROQ_RATE_LIMIT_MAX_WAIT_MS ?? 35_000);
 const RATE_LIMIT_MAX_WAITS = 3;
 
 function rateLimitWaitMs(error: unknown): number | null {
