@@ -75,20 +75,43 @@ function wait(ms: number): Promise<void> {
 
 /**
  * The on_demand tier allows 8,000 tokens per minute and each call requests
- * 2,400-3,900, so the sequential section calls hit the per-minute limit mid-run.
- * Groq names the wait ("Please try again in 24.6s"); waits up to a bit over a
- * minute window are worth sitting out. Longer ones (daily limits read
- * "in 2m30s") are not. 20s was too tight: a 24.6s wait failed a real run.
+ * roughly 3,000-4,500 (prompt plus max_tokens), so the sequential section calls
+ * hit the per-minute limit mid-run. Groq names the wait ("Please try again in
+ * 24.6s"); waits up to a bit over a minute window are worth sitting out. Longer
+ * ones (daily limits read "in 2m30s") are not. 20s was too tight: a 24.6s wait
+ * failed a real run.
  */
 const RATE_LIMIT_MAX_WAIT_MS = Number(process.env.GROQ_RATE_LIMIT_MAX_WAIT_MS ?? 35_000);
 const RATE_LIMIT_MAX_WAITS = 3;
 
-function rateLimitWaitMs(error: unknown): number | null {
+const DURATION_UNIT_MS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
+
+/**
+ * The wait Groq asks for, or null when there is none or it is too long to sit
+ * out. The wait is written as a duration: "24.6s", "495ms" or "1m2.5s". Reading
+ * only the plain-seconds form meant a sub-second wait was treated as no wait at
+ * all, and the run fell through to the fallback provider.
+ */
+export function rateLimitWaitMs(error: unknown): number | null {
   const message = error instanceof Error ? error.message : String(error);
-  const match = /try again in (\d+(?:\.\d+)?)s\b/.exec(message);
+  const match = /try again in ((?:\d+(?:\.\d+)?(?:ms|h|m|s))+)/.exec(message);
   if (!match) return null;
-  const ms = Math.ceil(Number(match[1]) * 1000) + 500;
+  let total = 0;
+  for (const [, value, unit] of match[1].matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)) {
+    total += Number(value) * DURATION_UNIT_MS[unit];
+  }
+  const ms = Math.ceil(total) + 500;
   return ms <= RATE_LIMIT_MAX_WAIT_MS ? ms : null;
+}
+
+/**
+ * Output allowance for a section call. Groq counts max_tokens against the
+ * per-minute limit before the call runs, so a flat 2,000 reserved far more than
+ * a one-story section ever writes. A story is about 250 tokens of JSON; the
+ * base covers the model's hidden reasoning at low effort.
+ */
+function sectionMaxTokens(storyCount: number): number {
+  return 700 + 300 * storyCount;
 }
 
 export function buildSystemPrompt(): string {
@@ -286,7 +309,7 @@ export async function generateGazette(
     try {
       const raw = await completeWithGroq(
         `${articleContext}\n\n${buildSectionPrompt(section, usedHeadlines, recentHeadlines)}`,
-        2000
+        sectionMaxTokens(section.count)
       );
       const parsed = parseModelJsonValue(raw, "array") as Array<Record<string, unknown> | null>;
       for (const story of parsed.slice(0, section.count)) {

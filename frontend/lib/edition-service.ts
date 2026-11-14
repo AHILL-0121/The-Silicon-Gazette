@@ -36,6 +36,15 @@ export class GenerationFailedError extends Error {}
 /** Retrying is pointless until the next UTC day, so callers shouldn't. */
 export class BudgetExhaustedError extends GenerationFailedError {}
 
+/** What started a generation run; named in the Slack notices. */
+export type GenerationTrigger = "github-actions" | "vercel-cron" | "live-visit";
+
+const TRIGGER_LABELS: Record<GenerationTrigger, string> = {
+  "github-actions": "GitHub Actions",
+  "vercel-cron": "Vercel Cron (backup)",
+  "live-visit": "Live Visit"
+};
+
 /** Only try the Gemini fallback if Groq failed early enough to leave it time. */
 const FALLBACK_CUTOFF_MS = Number(process.env.GEMINI_FALLBACK_CUTOFF_MS ?? 150_000);
 
@@ -140,7 +149,11 @@ async function loadRecentRepoNames(date: string): Promise<Set<string>> {
   }
 }
 
-async function runPipeline(date: string, budget: { used: number; limit: number }): Promise<EditionRecord> {
+async function runPipeline(
+  date: string,
+  budget: { used: number; limit: number },
+  trigger: GenerationTrigger
+): Promise<EditionRecord> {
   const start = Date.now();
   // Search once and reuse the results for the fallback provider. Without
   // search results there is nothing to report, so name the reason and stop.
@@ -260,13 +273,16 @@ async function runPipeline(date: string, budget: { used: number; limit: number }
     [content.headline.url, ...content.stories.map((story) => story.url)].filter((url): url is string => Boolean(url))
   );
   await sendNotice(`generation-succeeded:${date}`, `Edition ${date} (No. ${record.issue_num}) published.`, {
+    generatedFrom: TRIGGER_LABELS[trigger],
     lead: `[${content.headline.category}] ${content.headline.title}`,
     contents: `${content.stories.length} stories, ${content.repos.length} repos, market brief ${content.market_brief ? "included" : "missing"}`,
     factCheck: report
       ? `${report.droppedStories.length} stories dropped, ${report.trimmedSentences} unsupported sentences removed, ${report.headlinesReplaced} headlines replaced by source titles, ${report.droppedRepos.length} repos dropped, ${report.repoFixes.length} repo fields blanked`
       : "not run",
     sources: `${linkedSources.size} linked of ${allowedUrls.size} search results${searchReused ? " (reused from an earlier attempt)" : ""}`,
-    model: fallbackReason ? `${model} (Gemini fallback; Groq failed: ${fallbackReason.slice(0, 200)})` : model,
+    // 450, not 200: Groq's rate-limit message ends with "Requested N. Please try
+    // again in Xs", and that tail is what explains the failure.
+    model: fallbackReason ? `${model} (Gemini fallback; Groq failed: ${fallbackReason.slice(0, 450)})` : model,
     timing: `${seconds(record.latency_ms ?? Date.now() - start)} total (search ${seconds(searchMs)}, writing ${seconds((record.latency_ms ?? 0) - searchMs)})`,
     budget: `run ${budget.used} of ${budget.limit} today`,
     url: absoluteUrl(`/gazette/${date}`)
@@ -299,7 +315,7 @@ async function waitForOtherInstance(date: string): Promise<EditionRecord> {
   throw new Error(`Timed out waiting for another instance to generate ${date}`);
 }
 
-async function runLockedPipeline(date: string): Promise<EditionRecord> {
+async function runLockedPipeline(date: string, trigger: GenerationTrigger): Promise<EditionRecord> {
   const lock = await acquireGenerationLock(date);
   if (lock.status === "busy") {
     return waitForOtherInstance(date);
@@ -312,7 +328,7 @@ async function runLockedPipeline(date: string): Promise<EditionRecord> {
     if (!budget.allowed) {
       throw new BudgetExhaustedError(`Daily generation budget exhausted (${budget.used}/${budget.limit}).`);
     }
-    return await runPipeline(date, budget);
+    return await runPipeline(date, budget, trigger);
   } finally {
     if (lock.status === "acquired") await lock.release();
   }
@@ -327,8 +343,9 @@ async function runLockedPipeline(date: string): Promise<EditionRecord> {
  */
 export async function generateEdition(
   date: string,
-  options?: { ignoreCooldown?: boolean }
+  options?: { ignoreCooldown?: boolean; trigger?: GenerationTrigger }
 ): Promise<EditionRecord> {
+  const trigger = options?.trigger ?? "live-visit";
   const running = inflight.get(date);
   if (running) {
     return running;
@@ -339,7 +356,7 @@ export async function generateEdition(
     throw new GenerationFailedError("The presses are cooling down after a failed run. Try again shortly.");
   }
 
-  const run = runLockedPipeline(date)
+  const run = runLockedPipeline(date, trigger)
     .then((record) => {
       failures.delete(date);
       logEvent("info", "generation.succeeded", { date, model: record.model, latencyMs: record.latency_ms });
@@ -353,6 +370,7 @@ export async function generateEdition(
         reason: message,
         type: errorName,
         cause,
+        generatedFrom: TRIGGER_LABELS[trigger],
         attempt: options?.ignoreCooldown ? "trusted caller (cron/maintainer)" : "reader request",
         nextStep: options?.ignoreCooldown
           ? "retry via the Generate Today's Edition workflow"
@@ -456,7 +474,7 @@ export const readLatestEditionDate = unstable_cache(() => getLatestEditionDate()
 
 export async function getEditionForDate(
   date: string,
-  options?: { allowGenerate?: boolean; ignoreCooldown?: boolean }
+  options?: { allowGenerate?: boolean; ignoreCooldown?: boolean; trigger?: GenerationTrigger }
 ): Promise<{ edition: EditionRecord | null; cached: boolean }> {
   const cachedEdition = await readEdition(date);
   if (cachedEdition) {
@@ -467,7 +485,10 @@ export async function getEditionForDate(
     return { edition: null, cached: false };
   }
 
-  const generated = await generateEdition(date, { ignoreCooldown: options.ignoreCooldown });
+  const generated = await generateEdition(date, {
+    ignoreCooldown: options.ignoreCooldown,
+    trigger: options.trigger
+  });
   return { edition: generated, cached: false };
 }
 

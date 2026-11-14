@@ -9,6 +9,7 @@ import {
   BudgetExhaustedError,
   EDITIONS_TAG,
   GenerationFailedError,
+  type GenerationTrigger,
   editionTag,
   getEditionForDate
 } from "@/lib/edition-service";
@@ -42,7 +43,12 @@ interface GenerationOutcome {
   cached: boolean;
 }
 
-async function runGeneration(date: string, trusted: boolean, outcome: GenerationOutcome) {
+async function runGeneration(
+  date: string,
+  trusted: boolean,
+  outcome: GenerationOutcome,
+  trigger: GenerationTrigger
+) {
   if (!isValidEditionDate(date)) {
     return NextResponse.json({ error: "Invalid date format. Use YYYY-MM-DD." }, { status: 400 });
   }
@@ -58,7 +64,7 @@ async function runGeneration(date: string, trusted: boolean, outcome: Generation
   }
 
   try {
-    const result = await getEditionForDate(date, { allowGenerate: true, ignoreCooldown: trusted });
+    const result = await getEditionForDate(date, { allowGenerate: true, ignoreCooldown: trusted, trigger });
     if (!result.edition) {
       return NextResponse.json({ error: "Edition generation returned no data." }, { status: 503 });
     }
@@ -141,7 +147,8 @@ export async function POST(req: Request) {
       payload = {};
     }
 
-    return runGeneration(payload.date ?? toEditionDate(), trusted, outcome);
+    // The workflow is the only caller that POSTs with the cron secret.
+    return runGeneration(payload.date ?? toEditionDate(), trusted, outcome, trusted ? "github-actions" : "live-visit");
   });
 }
 
@@ -158,6 +165,6 @@ export async function GET(req: Request) {
     }
 
     const date = new URL(req.url).searchParams.get("date") ?? toEditionDate();
-    return runGeneration(date, trusted, outcome);
+    return runGeneration(date, trusted, outcome, trusted ? "vercel-cron" : "live-visit");
   });
 }
